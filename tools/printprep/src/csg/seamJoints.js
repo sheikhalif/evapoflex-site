@@ -371,7 +371,10 @@ export function seamCutter(p, { span, thickness, grow = 0 }) {
   })();
   const joined = cs.add(tabCs);
   cs.delete(); tabCs.delete();
-  const solid = Manifold.extrude(joined, thickness + 4).translate([0, 0, -2]);
+  // extrude() then translate() is two allocations; only the second is kept.
+  const flat = Manifold.extrude(joined, thickness + 4);
+  const solid = flat.translate([0, 0, -2]);
+  flat.delete();
   joined.delete();
   return solid;
 }
