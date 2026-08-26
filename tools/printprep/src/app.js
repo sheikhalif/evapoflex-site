@@ -41,6 +41,7 @@ export async function boot({ workerSources, baseUrl }) {
     parts: [],            // see mkPart
     joints: [],           // {id, planeIdx, aPartId, bPartId, axis, S, hb, sites, frame, maleOn, swap}
     plan: null,           // last plan from geom.plan
+    manualPlanes: [],     // user-placed cuts: {n, d, point, helper}
     view: 'model',
     explodeT: 0,
     section: { on: false, axis: 'x', frac: 0.5 },
@@ -138,9 +139,11 @@ export async function boot({ workerSources, baseUrl }) {
     stage.world.clear();
     if (state.model?.csgId) csg.call('csg.release', { solidIds: [state.model.csgId] });
     csg.call('csg.release', { solidIds: state.parts.map((p) => p.csgId).filter(Boolean) });
+    for (const e of state.manualPlanes) disposeGroup(e.helper);
+    state.manualPlanes = []; state.cutMode = false;
     state.model = null; state.parts = []; state.joints = []; state.plan = null;
     state.plates = []; state.selected = null; state.view = 'model';
-    refreshParts(); refreshModelCard(); refreshActions(); refreshSelected();
+    refreshParts(); refreshModelCard(); refreshActions(); refreshSelected(); refreshCuts();
   }
   function disposeGroup(g) {
     g?.traverse((o) => { o.geometry?.dispose(); if (o.material?.dispose) o.material.dispose(); });
@@ -153,10 +156,15 @@ export async function boot({ workerSources, baseUrl }) {
     if (!m.csgId) { say(`Cannot split: ${m.csgError}`, true, 7000); return; }
     setProgress(0.05);
     try {
+      const useManual = manualPlanes ||
+        (state.manualPlanes.length ? state.manualPlanes.map((p) => ({ n: p.n, d: p.d })) : null);
       const plan = await geom.call('geom.plan', {
         id: m.geomId, bed: state.bed, sMax: state.sMax, fit: fit(),
-        nozzle: printer().nozzle, manualPlanes,
+        nozzle: printer().nozzle, manualPlanes: useManual,
       }, { onProgress: (p) => setProgress(0.05 + p.frac * 0.3) });
+      state.cutMode = false;
+      for (const e of state.manualPlanes) e.helper.visible = false;
+      refreshCuts();
       state.plan = { ...plan, manualPlanes };
 
       if (!plan.planes.length) {
@@ -165,6 +173,8 @@ export async function boot({ workerSources, baseUrl }) {
         return;
       }
       if (!plan.fits) say(`Warning: ${plan.log.join(' / ')}`, true, 6000);
+      const missing = plan.placements.filter((p) => !p).length;
+      if (missing) say(`${missing} cut${missing === 1 ? ' has' : 's have'} no room for a joint (face under 12 mm of clear material) - those seams will be plain butt joints.`, true, 7000);
       await executePlan(plan);
       setProgress(1);
       say(`${state.parts.length} parts, ${state.joints.length} joint face${state.joints.length === 1 ? '' : 's'}. Check them in Ghost view.`);
@@ -587,9 +597,12 @@ export async function boot({ workerSources, baseUrl }) {
         return meshCache.get(part.id);
       };
 
+      const skipped = [];
       for (let pi = 0; pi < state.plates.length; pi++) {
         const plate = state.plates[pi];
         const placed = plate.placements.filter((p) => !p.tooBig);
+        skipped.push(...plate.placements.filter((p) => p.tooBig).map((p) => p.id));
+        if (!placed.length) continue;    // a plate of only unplaceable parts is not a file worth writing
         const objects = [];
         for (let oi = 0; oi < placed.length; oi++) {
           const part = state.parts.find((p) => p.id === placed[oi].id);
@@ -628,7 +641,10 @@ export async function boot({ workerSources, baseUrl }) {
         }
       }
       setProgress(1);
-      say(`Exported ${files.length} file${files.length === 1 ? '' : 's'}. The 3MF opens straight in ElegooSlicer or OrcaSlicer; slice there for G-code.`);
+      const skippedNames = skipped.map((id) => state.parts.find((p) => p.id === id)?.name).filter(Boolean);
+      say(`Exported ${files.length} file${files.length === 1 ? '' : 's'}.` +
+        (skippedNames.length ? ` LEFT OUT of the plates (too big for the bed): ${skippedNames.join(', ')} - their STLs are still exportable individually.` : '') +
+        ' The 3MF opens straight in ElegooSlicer or OrcaSlicer; slice there for G-code.', skippedNames.length > 0, 8000);
     } catch (e) { setProgress(0); say(e.message, true, 7000); }
   }
 
@@ -684,7 +700,7 @@ export async function boot({ workerSources, baseUrl }) {
   const safe = (s) => s.replace(/[^\w.-]+/g, '_').slice(0, 60);
 
   // ================================================================ UI: left
-  var actionsCard, modelCard, fitSliderCtl;
+  var actionsCard, modelCard, fitSliderCtl, cutsCard;
   function buildLeftPanel() {
     // Import
     const fileInput = el('input', { type: 'file', accept: '.stl', style: 'display:none' });
@@ -762,6 +778,11 @@ export async function boot({ workerSources, baseUrl }) {
         button('Print fit coupon', exportCoupon, 'g sm')),
     ));
 
+    // Manual cuts
+    cutsCard = card('Cuts', el('div', { class: 'empty' }, 'Optional. Turn on Place cuts, then click a face to add a cut in its plane, or a bore to cut square to it. Auto Split uses your cuts when any exist.'));
+    L.append(cutsCard);
+    refreshCuts();
+
     // Actions
     actionsCard = card('Actions',
       el('div', { class: 'btnrow' },
@@ -773,6 +794,34 @@ export async function boot({ workerSources, baseUrl }) {
     );
     L.append(actionsCard);
     refreshActions();
+  }
+
+  function refreshCuts() {
+    if (!cutsCard) return;
+    cutsCard.innerHTML = '';
+    const toggle = button(state.cutMode ? 'Placing cuts — click the model' : 'Place cuts', () => {
+      state.cutMode = !state.cutMode;
+      refreshCuts();
+    }, state.cutMode ? 'sm' : 'g sm');
+    cutsCard.append(el('div', { class: 'card-t' }, 'Cuts ', el('span', { class: 'n' }, state.manualPlanes.length || '')), toggle);
+    if (!state.manualPlanes.length) {
+      cutsCard.append(el('div', { class: 'note' },
+        'Optional. Click a face to add a cut in its plane, a bore to cut square to its axis. With no cuts placed, Auto Split chooses its own.'));
+      return;
+    }
+    state.manualPlanes.forEach((entry, i) => {
+      const range = Math.max(20, (state.model?.summary.diag || 100) / 3);
+      const slider = el('input', { type: 'range', min: -range, max: range, step: 0.5, value: entry.d - entry.d0 });
+      slider.addEventListener('input', () => {
+        entry.d = entry.d0 + Number(slider.value);
+        entry.place(entry.d);
+      });
+      cutsCard.append(el('div', { class: 'row' },
+        el('span', { class: 'lbl w' }, `Cut ${i + 1}`),
+        slider,
+        button('×', () => removeManualPlane(entry), 'g sm')));
+    });
+    cutsCard.append(el('div', { class: 'note' }, 'Sliders move each cut along its own normal.'));
   }
 
   function refreshActions() {
@@ -1050,18 +1099,108 @@ export async function boot({ workerSources, baseUrl }) {
   // ================================================================ picking
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
+  // A click is a click only if the pointer barely moved - otherwise it was an
+  // orbit drag and placing a cut mid-orbit would drive anyone mad.
+  let downAt = null;
   stage.renderer.domElement.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0 || !state.parts.length) return;
+    if (e.button === 0) downAt = [e.clientX, e.clientY];
+  });
+  stage.renderer.domElement.addEventListener('pointerup', async (e) => {
+    if (e.button !== 0 || !downAt) return;
+    const moved = Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]);
+    downAt = null;
+    if (moved > 5) return;
+
     const rect = stage.renderer.domElement.getBoundingClientRect();
     pointer.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
     raycaster.setFromCamera(pointer, stage.camera);
-    const meshes = state.parts.map((p) => p.mesh).filter((m) => m.visible);
-    const hits = raycaster.intersectObjects(meshes, false);
-    if (hits.length) {
-      const part = state.parts.find((p) => p.mesh === hits[0].object);
-      if (part) selectPart(part.id);
+
+    if (state.parts.length) {
+      const meshes = state.parts.map((p) => p.mesh).filter((m) => m.visible);
+      const hits = raycaster.intersectObjects(meshes, false);
+      if (hits.length) {
+        const part = state.parts.find((p) => p.mesh === hits[0].object);
+        if (part) selectPart(part.id);
+      }
+      return;
+    }
+
+    // Before a split, in cut mode, clicking the model snaps a cut to what was
+    // clicked: a flat face gives a cut in that face's plane, a bore gives a cut
+    // square to its axis through the click point. This is where the
+    // clean-geometry analysis pays off - the click hits a FEATURE, not a
+    // triangle.
+    if (!state.model || !state.cutMode) return;
+    const m = state.model;
+    const off = state.modelOffset || new THREE.Vector3();
+    const origin = raycaster.ray.origin.clone().sub(off);
+    const dir = raycaster.ray.direction;
+    const hit = await geom.call('geom.pick', {
+      id: m.geomId, origin: [origin.x, origin.y, origin.z], dir: [dir.x, dir.y, dir.z],
+    }).catch(() => null);
+    if (!hit) return;
+    if (hit.kind === 'plane') {
+      // A cut exactly in an OUTER face's plane is a zero-thickness slice - the
+      // click means "cut in this direction", so when the face is the model's
+      // skin, start the cut mid-model along that normal instead. A shoulder or
+      // step face inside the extent is kept exactly where it is.
+      let d = -hit.d;
+      const ext = extentAlongModel(hit.n);
+      if (d - ext.lo < 1 || ext.hi - d < 1) {
+        d = (ext.lo + ext.hi) / 2;
+        say('That face is the outer skin, so the cut starts mid-model in its plane direction. Slide it where you want it.');
+      } else {
+        say('Cut added in the plane of that face. Slide it in the Cuts card, then Split.');
+      }
+      addManualPlane(hit.n, d, hit.point);
+    } else {
+      const d = hit.axis[0] * hit.point[0] + hit.axis[1] * hit.point[1] + hit.axis[2] * hit.point[2];
+      addManualPlane(hit.axis, d, hit.point);
+      say("Cut added square to that bore's axis.");
     }
   });
+
+  function addManualPlane(n, d, point) {
+    const size = state.model ? state.model.summary.diag * 0.8 : 200;
+    const helper = new THREE.Group();
+    const quad = new THREE.Mesh(new THREE.PlaneGeometry(size, size),
+      new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.14, side: THREE.DoubleSide, depthWrite: false }));
+    const outline = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(size, size)),
+      new THREE.LineBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.5 }));
+    helper.add(quad, outline);
+    helper.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), V3(n));
+    const off = state.modelOffset || new THREE.Vector3();
+    const place = (dd) => {
+      // Keep the quad centred near the click, but ON the plane n.x = dd.
+      const p = V3(point);
+      const slide = dd - (n[0] * point[0] + n[1] * point[1] + n[2] * point[2]);
+      p.add(V3(n).multiplyScalar(slide));
+      helper.position.copy(p).add(off);
+    };
+    place(d);
+    stage.world.add(helper);
+    const entry = { n: [...n], d, d0: d, point: [...point], helper, place };
+    state.manualPlanes.push(entry);
+    refreshCuts();
+  }
+
+  function extentAlongModel(n) {
+    const b = state.model.summary.bbox;
+    let lo = Infinity, hi = -Infinity;
+    for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) {
+      const h = x * n[0] + y * n[1] + z * n[2];
+      if (h < lo) lo = h;
+      if (h > hi) hi = h;
+    }
+    return { lo, hi };
+  }
+
+  function removeManualPlane(entry) {
+    stage.world.remove(entry.helper);
+    disposeGroup(entry.helper);
+    state.manualPlanes = state.manualPlanes.filter((p) => p !== entry);
+    refreshCuts();
+  }
 
   // ---------------------------------------------------------------- misc math
   const IDENT16 = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
@@ -1071,4 +1210,8 @@ export async function boot({ workerSources, baseUrl }) {
   const unit = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 
   say('Ready. Import an STL to begin.');
+
+  // A named handle for tests and for poking at the tool from the console. It
+  // lives behind the gate, so it exposes nothing the page does not already hold.
+  window.__pp = { state, geom, csg, stage, autoSplit, arrange, addManualPlane };
 }

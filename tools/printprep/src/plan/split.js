@@ -263,6 +263,19 @@ export function manualTree(rootSoup, planes) {
     for (const piece of pieces) {
       const { a, b } = clipSoup(piece.soup, pl.n, pl.d);
       if (a.length < 27 || b.length < 27) { next.push(piece); continue; }
+      // A cut that shaves a sliver is worse than no cut: the sliver cannot
+      // carry a joint and prints as confetti. Both sides must have real depth
+      // along the cut normal.
+      const depthOf = (soup) => {
+        let lo = Infinity, hi = -Infinity;
+        for (let i = 0; i < soup.length; i += 3) {
+          const h = soup[i] * pl.n[0] + soup[i + 1] * pl.n[1] + soup[i + 2] * pl.n[2];
+          if (h < lo) lo = h;
+          if (h > hi) hi = h;
+        }
+        return hi - lo;
+      };
+      if (depthOf(a) < 5 || depthOf(b) < 5) { next.push(piece); continue; }
       const sec = sectionLoops(piece.soup, identityTris(piece.soup), pl.n, pl.d);
       const boundary = sectionBoundary3D(sec);
       const pa = mk(a, [...piece.cutFaces, { n: pl.n.map((v) => -v), boundary }]);
