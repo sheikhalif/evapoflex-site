@@ -24,3 +24,9 @@ __pycache__/
 .idea/
 
 .gh-token
+
+# Print Prep tool build artefacts and gate password
+tools/printprep/node_modules/
+tools/printprep/.build/
+tools/printprep/package-lock.json
+.printprep-password

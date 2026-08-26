@@ -1,0 +1,11 @@
+{
+  "name": "evapoflex-printprep-build",
+  "private": true,
+  "type": "module",
+  "description": "Build script for the EvapoFlex Print Prep tool. Bundles src/ and encrypts it into ../../printprep.html",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/"
+  },
+  "devDependencies": { "esbuild": "^0.25.0" }
+}
