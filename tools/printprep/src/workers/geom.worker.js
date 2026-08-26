@@ -18,8 +18,7 @@ import { BVH } from '../geom/bvh.js';
 import { overhangAudit } from '../geom/overhang.js';
 import { planSplit, manualTree } from '../plan/split.js';
 import { placeJoints } from '../plan/jointSites.js';
-import { protrusionBound } from '../plan/fitTest.js';
-import { decimateSoup } from '../geom/meshclip.js';
+import { protrusionBound, fitsWithJoints, fitPoints } from '../plan/fitTest.js';
 import { buildNormalHist } from '../geom/normalHist.js';
 import { rankOrientations } from '../plan/orient.js';
 import { selectChains } from '../csg/chamfer.js';
@@ -175,8 +174,13 @@ serve({
   async 'geom.plan'({ id, bed, sMax, fit, nozzle, manualPlanes }, ctx) {
     const e = parts.get(id);
     if (!e) throw new Error('unknown part');
-    const soup = soupOf(e.m);
-    const proxy = decimateSoup(soup, 24000);
+    // The search runs on the full welded soup. The earlier proxy - a random
+    // area-weighted triangle sample - was fine for extents and overhangs but
+    // fatal for the objective: sections of a randomly-holed soup do not close,
+    // their loop areas collapse, and every candidate plane gets rejected. The
+    // planner's own passes are linear in triangle count, so up to the 2M-tri
+    // import cap the full soup costs seconds, and it is CORRECT.
+    const proxy = soupOf(e.m);
     ctx.progress('search', 0.1);
     const prot = protrusionBound(sMax ?? 25, fit);
     const analysis = { regions: e.reg.regions, totalArea: e.reg.regions.reduce((s, r) => s + r.area, 0) };
@@ -187,7 +191,7 @@ serve({
       // plane to every piece it crosses, in order.
       plan = manualTree(proxy, manualPlanes);
     } else {
-      plan = planSplit(proxy, analysis, { bed, protrusion: prot, sMax, budgetMs: 8000 });
+      plan = planSplit(proxy, analysis, { bed, protrusion: prot, sMax, budgetMs: 15000 });
     }
     ctx.progress('joints', 0.6);
 
@@ -195,17 +199,40 @@ serve({
     for (const pl of plan.planes) {
       const a = plan.all.get(pl.aId);
       const b = plan.all.get(pl.bId);
-      if (!a || !b) { placements.push(null); continue; }
-      placements.push(placeJoints(a.soup, b.soup, pl, { nozzle: nozzle ?? 0.4, fit, sMax }));
+      if (!a || !b || pl.jointless) { placements.push(null); continue; }
+      placements.push(placeJoints(a.soup, b.soup, pl, {
+        nozzle: nozzle ?? 0.4, fit, sMax,
+        rootSoup: proxy, hsA: a.halfspaces, hsB: b.halfspaces,
+      }));
+    }
+    // The search judged bed fit against a worst-case joint protrusion. Now the
+    // real placements are known: a seam that took no joint protrudes nothing,
+    // and a seam that took an S = 15 joint protrudes that joint's boss, not a
+    // hypothetical 25 mm one. Re-judge every final piece against what will
+    // actually be stamped, so "does not fit" means exactly that.
+    const keyOf = (n, d) => n.map((v) => v.toFixed(3)).join(',') + '|' + d.toFixed(2);
+    const protByPlane = new Map();
+    plan.planes.forEach((pl, i) => {
+      protByPlane.set(keyOf(pl.n, pl.d), placements[i] ? placements[i].params.hb + 0.5 : 0);
+    });
+    let allFit = true;
+    for (const piece of plan.pieces) {
+      for (const f of piece.cutFaces) {
+        if (!f.plane) continue;
+        const pr = protByPlane.get(keyOf(f.plane.n, f.plane.d));
+        if (pr !== undefined) { f.jointless = pr === 0; f.prot = pr; }
+      }
+      piece.fit = fitsWithJoints(fitPoints(piece.soup), piece.cutFaces, bed, prot, 2);
+      if (!piece.fit) allFit = false;
     }
     return {
-      planes: plan.planes.map((p) => ({ n: p.n, d: p.d, parentId: p.parentId, aId: p.aId, bId: p.bId })),
+      planes: plan.planes.map((p) => ({ n: p.n, d: p.d, parentId: p.parentId, aId: p.aId, bId: p.bId, jointless: !!p.jointless })),
       placements: placements.map((p) => p && {
         S: p.S, T: p.T, sites: p.sites, frame: p.frame, areaMm2: p.areaMm2,
         hb: p.params.hb, depth: p.params.depth,
       }),
       log: plan.log,
-      fits: plan.pieces.every((p) => p.fit),
+      fits: allFit,
       pieceCount: plan.pieces.length,
     };
   },

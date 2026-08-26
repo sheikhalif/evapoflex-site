@@ -168,16 +168,25 @@ export async function boot({ workerSources, baseUrl }) {
       state.plan = { ...plan, manualPlanes };
 
       if (!plan.planes.length) {
-        say('It already fits the printer - nothing to split.');
+        // No planes can mean two very different things, and conflating them
+        // once told a 620 mm tube it "already fits".
+        if (plan.fits) say('It already fits the printer - nothing to split.');
+        else say(`Could not find any workable cut: ${plan.log.join('; ')}. Try placing a cut by hand with Place cuts.`, true, 9000);
         setProgress(1);
         return;
       }
-      if (!plan.fits) say(`Warning: ${plan.log.join(' / ')}`, true, 6000);
       const missing = plan.placements.filter((p) => !p).length;
-      if (missing) say(`${missing} cut${missing === 1 ? ' has' : 's have'} no room for a joint (face under 12 mm of clear material) - those seams will be plain butt joints.`, true, 7000);
       await executePlan(plan);
+      const bad = state.parts.filter((p) => p.summary.size.some((d, i) => d > [state.bed.x, state.bed.y, state.bed.z][i])).length;
+      if (!plan.fits && bad) {
+        say(`${state.parts.length} parts, but ${bad} still exceed${bad === 1 ? 's' : ''} the printer - the search ran out of workable cuts (${plan.log[plan.log.length - 1]}). Add manual cuts for the red parts.`, true, 9000);
+      } else if (missing) {
+        say(`${state.parts.length} parts. ${missing} seam${missing === 1 ? ' has' : 's have'} no room for a snap joint (under 12 mm of clear material) - those are plain glue seams, shown without joint markers.`, true, 8000);
+      }
       setProgress(1);
-      say(`${state.parts.length} parts, ${state.joints.length} joint face${state.joints.length === 1 ? '' : 's'}. Check them in Ghost view.`);
+      if (!missing && (plan.fits || !bad)) {
+        say(`${state.parts.length} parts, ${state.joints.length} joint face${state.joints.length === 1 ? '' : 's'}. Check them in Ghost view.`);
+      }
     } catch (e) {
       setProgress(0);
       say(e.message, true, 7000);
@@ -226,25 +235,52 @@ export async function boot({ workerSources, baseUrl }) {
     };
 
     state.joints = [];
+    let jseq = 0;
     for (let i = 0; i < plan.planes.length; i++) {
       const pl = plan.planes[i], placed = plan.placements[i];
       if (!placed) continue;
-      const centroid = avg(placed.sites.map((s) => s.world));
-      const aLeaf = descend(pl.aId, centroid);
-      const bLeaf = descend(pl.bId, centroid);
-      const maleOn = state.plan?.swaps?.[i] ? 'A' : 'B';
-      const r = await csg.call('csg.stamp', {
-        aId: idMap.get(aLeaf), bId: idMap.get(bLeaf),
-        placement: placed, fit: fit(), maleOn,
-      });
-      if (!r.audit.ok) say(`Joint ${i + 1}: containment audit failed (${(r.audit.maleContained * 100).toFixed(1)}% / ${(r.audit.femaleContained * 100).toFixed(1)}%)`, true, 8000);
-      idMap.set(aLeaf, r.aId);
-      idMap.set(bLeaf, r.bId);
-      state.joints.push({
-        id: `j${i}`, planeIdx: i, aLeaf, bLeaf,
-        axis: r.meta.axis, S: placed.S, hb: r.meta.hb ?? placed.hb, depth: placed.depth,
-        sites: placed.sites, frame: placed.frame, maleOn, audit: r.audit,
-      });
+      // A joint was placed on this plane's contact face when it had exactly two
+      // sides. Later cuts may have subdivided both sides, so different SITES on
+      // the same plane can now belong to different leaf pairs - stamping them
+      // all into one pair once put a joint bodily inside a third part and
+      // failed the containment audit. Group sites by the leaf pair that
+      // actually contains them, probing a little either side of the plane.
+      const groups = new Map();
+      let dropped = 0;
+      for (const site of placed.sites) {
+        // A site placed on the original, undivided face can end up within a
+        // joint's own footprint of a LATER cut. Its material-behind test knew
+        // nothing about that cut, so the stamped joint would poke out of the
+        // leaf - drop such sites and leave that patch of seam plain.
+        const nearOtherCut = plan.planes.some((q, qi) => qi !== i &&
+          Math.abs(q.n[0] * site.world[0] + q.n[1] * site.world[1] + q.n[2] * site.world[2] - q.d)
+            < placed.S / Math.SQRT2 + 2);
+        if (nearOtherCut) { dropped++; continue; }
+        const eps = 1.0;
+        const pa = site.world.map((v, k) => v + pl.n[k] * eps);
+        const pb = site.world.map((v, k) => v - pl.n[k] * eps);
+        const aLeaf = descend(pl.aId, pa);
+        const bLeaf = descend(pl.bId, pb);
+        const key = aLeaf + ':' + bLeaf;
+        if (!groups.has(key)) groups.set(key, { aLeaf, bLeaf, sites: [] });
+        groups.get(key).sites.push(site);
+      }
+      if (dropped) say(`${dropped} joint site${dropped === 1 ? '' : 's'} sat too close to another cut and ${dropped === 1 ? 'was' : 'were'} left as plain seam.`, false, 5000);
+      for (const g of groups.values()) {
+        const maleOn = state.plan?.swaps?.[i] ? 'A' : 'B';
+        const r = await csg.call('csg.stamp', {
+          aId: idMap.get(g.aLeaf), bId: idMap.get(g.bLeaf),
+          placement: { ...placed, sites: g.sites }, fit: fit(), maleOn,
+        });
+        if (!r.audit.ok) say(`A joint's containment audit failed (${(r.audit.maleContained * 100).toFixed(1)}% / ${(r.audit.femaleContained * 100).toFixed(1)}%) - inspect it in Ghost view.`, true, 8000);
+        idMap.set(g.aLeaf, r.aId);
+        idMap.set(g.bLeaf, r.bId);
+        state.joints.push({
+          id: `j${jseq++}`, planeIdx: i, aLeaf: g.aLeaf, bLeaf: g.bLeaf,
+          axis: r.meta.axis, S: placed.S, hb: r.meta.hb ?? placed.hb, depth: placed.depth,
+          sites: g.sites, frame: placed.frame, maleOn, audit: r.audit,
+        });
+      }
       setProgress(0.55 + 0.15 * (i + 1) / plan.planes.length);
     }
 

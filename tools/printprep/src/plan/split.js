@@ -38,13 +38,26 @@ function candidateOffsets(profile, maxPer = 5) {
   return picks;
 }
 
-/** Candidate planes for one piece: axis sweeps, dominant faces, principal axes. */
+/**
+ * Candidate planes for one piece: axis sweeps, dominant faces, principal axes.
+ *
+ * `opts.overflowAxes` restricts the directions to ones that can actually help.
+ * A 520 x 400 x 24 panel is oversize in x and y; a z-normal cut slices it into
+ * thinner panels that are exactly as unprintable as before, and because those
+ * sections are huge and flat the objective LIKED them - the search once turned
+ * that panel into eleven stacked slabs, some zero millimetres thick. A cut can
+ * only reduce an overflow if its normal has real component along an
+ * overflowing axis, so directions that do not are never offered.
+ */
 export function candidatePlanes(piece, analysis, opts = {}) {
   const soup = piece.soup;
   const cands = [];
   const axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  const over = opts.overflowAxes;   // e.g. [true, true, false], or null for all
+  const helps = (n) => !over || over.some((o, k) => o && Math.abs(n[k]) > 0.5);
 
   for (const n of axes) {
+    if (!helps(n)) continue;
     const prof = areaProfile(soupVerts(soup), soupTris(soup), n, 96);
     for (const c of candidateOffsets(prof)) cands.push({ n, d: c.d, why: c.why + '-axis' });
   }
@@ -57,6 +70,7 @@ export function candidatePlanes(piece, analysis, opts = {}) {
       .sort((a, b) => b.area - a.area).slice(0, 6);
     for (const r of top) {
       const n = r.n;
+      if (!helps(n)) continue;
       // Skip near-axis normals - already covered.
       if (axes.some((a) => Math.abs(a[0] * n[0] + a[1] * n[1] + a[2] * n[2]) > 0.98)) continue;
       const prof = areaProfile(soupVerts(soup), soupTris(soup), n, 64);
@@ -64,11 +78,12 @@ export function candidatePlanes(piece, analysis, opts = {}) {
     }
   }
 
-  // Guaranteed fallbacks: mid-box on each axis. The search must always have a
-  // feasible completion available.
+  // Guaranteed fallbacks: mid-box on each helpful axis. The search must always
+  // have a feasible completion available.
   const b = soupBounds(soup);
   for (let k = 0; k < 3; k++) {
     const n = axes[k];
+    if (!helps(n)) continue;
     cands.push({ n, d: (b.min[k] + b.max[k]) / 2, why: 'fallback' });
   }
   return cands;
@@ -99,19 +114,52 @@ export function scorePlane(piece, plane, ctx) {
   const { a, b } = clipSoup(piece.soup, n, d);
   if (a.length < 27 || b.length < 27) return { cost: Infinity };
 
-  const sec = sectionLoops(soupVerts(piece.soup), soupTris(piece.soup), n, d);
-  if (sec.area < 1) return { cost: Infinity };
+  // The section is taken through the ROOT solid, then masked down to this
+  // piece's halfspaces on the raster. Slicing the piece's own soup is the
+  // obvious move and it is wrong: clipped soups are open shells, their section
+  // loops do not close, and the areas come out as zero - which once rejected
+  // every candidate through a panel that had already been cut once.
+  const rootSoup = ctx.rootSoup || piece.soup;
+  const sec = sectionLoops(soupVerts(rootSoup), soupTris(rootSoup), n, d);
+  if (!sec.loops.length) return { cost: Infinity };
 
-  // Joint capacity from the section's own distance field.
-  const grid = rasterize(sec.loops.map((l) => l), { cell: Math.max(0.5, Math.sqrt(sec.area) / 96) });
+  let grid = rasterize(sec.loops.map((l) => l), { cell: Math.max(0.5, Math.sqrt(Math.max(sec.area, 25)) / 96) });
+  if (piece.halfspaces?.length) {
+    const { mask, w, h, x0, y0, cell } = grid;
+    for (let j = 0; j < h; j++) {
+      for (let i = 0; i < w; i++) {
+        const k = j * w + i;
+        if (!mask[k]) continue;
+        const x = x0 + (i + 0.5) * cell, y = y0 + (j + 0.5) * cell;
+        const px = sec.u[0] * x + sec.w[0] * y + sec.n[0] * sec.d;
+        const py = sec.u[1] * x + sec.w[1] * y + sec.n[1] * sec.d;
+        const pz = sec.u[2] * x + sec.w[2] * y + sec.n[2] * sec.d;
+        for (const hsp of piece.halfspaces) {
+          if ((hsp.n[0] * px + hsp.n[1] * py + hsp.n[2] * pz - hsp.d) * hsp.sign < 0.25) { mask[k] = 0; break; }
+        }
+      }
+    }
+  }
+  let cells = 0;
+  for (let i = 0; i < grid.mask.length; i++) cells += grid.mask[i];
+  const secArea = cells * grid.cell * grid.cell;
+  if (secArea < 1) return { cost: Infinity };
+  sec.area = secArea;
+
   const fld = distanceField(grid);
   let maxD = 0;
   for (let i = 0; i < fld.d.length; i++) if (fld.d[i] > maxD) maxD = fld.d[i];
   const sFit = SQRT2 * (maxD - ctx.margin);
-  if (sFit < 1.1 * ctx.sMin) return { cost: Infinity };     // cannot joint: reject outright
+  // A face that cannot host a joint is normally rejected outright. But when a
+  // piece is oversize and NO plane through it can carry a joint - a thin-walled
+  // tube's annular section, a wheel's spoked disc - a plain glued butt seam
+  // beats a part that cannot print at all. The caller re-runs the scoring with
+  // allowJointless once the strict pass finds nothing.
+  const jointless = sFit < 1.1 * ctx.sMin;
+  if (jointless && !ctx.allowJointless) return { cost: Infinity };
 
   const sTarget = Math.min(ctx.sMax, Math.max(ctx.sMin, sFit));
-  const jointCap = Math.max(0, (ctx.sMax - sFit) / (ctx.sMax - ctx.sMin));
+  const jointCap = jointless ? 1.5 : Math.max(0, (ctx.sMax - sFit) / (ctx.sMax - ctx.sMin));
 
   const nTargetJoints = Math.max(1, Math.min(4, Math.floor(sec.area / (6 * sTarget * sTarget))));
   const areaIdeal = nTargetJoints * Math.pow(sTarget + 2 * ctx.margin, 2) / 0.35;
@@ -140,10 +188,21 @@ export function scorePlane(piece, plane, ctx) {
     0.3 * balance +
     (axisAligned ? 0 : 0.25);
 
-  return { cost, a, b, section: sec, sFit, sTarget, nTargetJoints };
+  return { cost, a, b, section: sec, sFit, sTarget, nTargetJoints, jointless };
 }
 
 const boxVol = (b) => Math.max(0, b.max[0] - b.min[0]) * Math.max(0, b.max[1] - b.min[1]) * Math.max(0, b.max[2] - b.min[2]);
+
+/** Extent of a soup along a direction - the sliver test. */
+function depthAlong(soup, n) {
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < soup.length; i += 3) {
+    const h = soup[i] * n[0] + soup[i + 1] * n[1] + soup[i + 2] * n[2];
+    if (h < lo) lo = h;
+    if (h > hi) hi = h;
+  }
+  return hi - lo;
+}
 
 /**
  * The search itself. States are whole configurations; each expansion splits the
@@ -155,7 +214,7 @@ export function planSplit(rootSoup, analysis, opts) {
   const bed = opts.bed;
   const prot = opts.protrusion;
   const margin = opts.margin ?? 2;
-  const ctx = { sMin: opts.sMin ?? 12, sMax: opts.sMax ?? 25, margin: opts.jointMargin ?? 1.5 };
+  const ctx = { sMin: opts.sMin ?? 12, sMax: opts.sMax ?? 25, margin: opts.jointMargin ?? 1.5, rootSoup };
   const beamWidth = opts.beamWidth ?? 4;
   const maxDepth = opts.maxParts ?? 16;
   const deadline = performance.now() + (opts.budgetMs ?? 6000);
@@ -163,8 +222,8 @@ export function planSplit(rootSoup, analysis, opts) {
 
   let nextId = 0;
   const all = new Map();
-  const mkPiece = (soup, cutFaces) => {
-    const p = { id: nextId++, soup, cutFaces, fit: null };
+  const mkPiece = (soup, cutFaces, halfspaces = []) => {
+    const p = { id: nextId++, soup, cutFaces, halfspaces, fit: null };
     all.set(p.id, p);
     return p;
   };
@@ -185,6 +244,16 @@ export function planSplit(rootSoup, analysis, opts) {
     if (done) { log.push(`solved at depth ${depth}, ${done.pieces.length} pieces`); return finish(done, log, all); }
     if (performance.now() > deadline) { log.push('budget hit - taking best partial'); break; }
 
+    // Duplicate suppression stops the beam collapsing into permutations of one
+    // configuration, but taken as law it can also strangle it: with few viable
+    // planes per piece, every child of every state can be "already seen" and
+    // the search dies with pieces still oversize. When a pass produces nothing,
+    // run it once more with the suppression off - a redundant expansion beats
+    // no expansion.
+    let next = expandBeam(true);
+    if (!next.length) next = expandBeam(false);
+
+    function expandBeam(useDedupe) {
     const next = [];
     for (const state of beam) {
       // Expand the worst piece: the one that overflows the bed the most.
@@ -199,23 +268,63 @@ export function planSplit(rootSoup, analysis, opts) {
       if (worst < 0) continue;
       const piece = state.pieces[worst];
 
-      const cands = candidatePlanes(piece, analysis, opts);
-      const scored = [];
-      for (const c of cands) {
-        const s = scorePlane(piece, c, ctx);
-        if (s.cost < Infinity) scored.push({ ...c, ...s });
-        if (performance.now() > deadline) break;
+      // Only offer cut directions that can reduce what actually overflows.
+      const pb = soupBounds(piece.soup);
+      const overflowAxes = [
+        pb.max[0] - pb.min[0] > bed.x - 2 * margin,
+        pb.max[1] - pb.min[1] > bed.y - 2 * margin,
+        pb.max[2] - pb.min[2] > bed.z - margin,
+      ];
+      const anyOver = overflowAxes.some(Boolean);
+      const cands = candidatePlanes(piece, analysis, { ...opts, overflowAxes: anyOver ? overflowAxes : null });
+
+      const scoreAll = (allowJointless) => {
+        const out = [];
+        const c2 = allowJointless ? { ...ctx, allowJointless: true } : ctx;
+        for (const c of cands) {
+          const s = scorePlane(piece, c, c2);
+          if (s.cost === Infinity) continue;
+          // Refuse slivers here too, not only in manual mode: a shaving cannot
+          // carry a joint and prints as scrap.
+          if (depthAlong(s.a, c.n) < 5 || depthAlong(s.b, c.n) < 5) continue;
+          out.push({ ...c, ...s });
+          if (performance.now() > deadline) break;
+        }
+        return out;
+      };
+      let scored = scoreAll(false);
+      if (!scored.length) {
+        // No plane through this piece can host a joint. A butt seam beats an
+        // unprintable part; the executor leaves such seams jointless and the
+        // UI says so.
+        scored = scoreAll(true);
+        if (scored.length) log.push('piece has no joint-capable cut - allowing a plain seam');
       }
       scored.sort((x, y) => x.cost - y.cost);
 
       for (const c of scored.slice(0, 6)) {
-        const key = state.planes.map((p) => planeKey(p)).concat(planeKey(c)).sort().join('|');
-        if (seen.has(key)) continue;
+        // The dedup key must name the PIECE each plane cut, not just the plane.
+        // A global plane-set key once made the second y = 0 cut of a wheel
+        // "a duplicate" of the first - applied to the other half, it was the
+        // one cut that search still needed.
+        const key = state.planes.map((p) => p.parentId + '@' + planeKey(p))
+          .concat(piece.id + '@' + planeKey(c)).sort().join('|');
+        if (useDedupe && seen.has(key)) continue;
         seen.add(key);
-        const fa = { n: c.n.map((v) => -v), boundary: sectionBoundary3D(c.section), plane: { n: c.n, d: c.d } };
-        const fb = { n: c.n.slice(), boundary: fa.boundary, plane: { n: c.n, d: c.d } };
-        const pa = mkPiece(c.a, [...piece.cutFaces, fa]);
-        const pb = mkPiece(c.b, [...piece.cutFaces, fb]);
+        // The section was taken through the ROOT, so its boundary spans the
+        // whole model - but this piece only owns the portion inside its own
+        // halfspaces. Attaching the full boundary once inflated a 130 mm panel
+        // piece's fit cloud to 493 mm and failed every piece of a fully
+        // solved plan.
+        const rawBoundary = sectionBoundary3D(c.section);
+        const boundary = piece.halfspaces.length
+          ? rawBoundary.filter((pt) => piece.halfspaces.every((h) =>
+              (h.n[0] * pt[0] + h.n[1] * pt[1] + h.n[2] * pt[2] - h.d) * h.sign >= -1))
+          : rawBoundary;
+        const fa = { n: c.n.map((v) => -v), boundary, plane: { n: c.n, d: c.d }, jointless: !!c.jointless };
+        const fb = { n: c.n.slice(), boundary, plane: { n: c.n, d: c.d }, jointless: !!c.jointless };
+        const pa = mkPiece(c.a, [...piece.cutFaces, fa], [...piece.halfspaces, { n: c.n, d: c.d, sign: 1 }]);
+        const pb = mkPiece(c.b, [...piece.cutFaces, fb], [...piece.halfspaces, { n: c.n, d: c.d, sign: -1 }]);
         pa.fit = fitOf(pa); pb.fit = fitOf(pb);
         const pieces = state.pieces.slice();
         pieces.splice(worst, 1, pa, pb);
@@ -226,12 +335,16 @@ export function planSplit(rootSoup, analysis, opts) {
           // replays exactly this, so the plan and the booleans cannot drift.
           planes: [...state.planes, {
             n: c.n, d: c.d, sTarget: c.sTarget, nJoints: c.nTargetJoints,
+            jointless: !!c.jointless,
             parentId: piece.id, aId: pa.id, bId: pb.id,
           }],
           cost: state.cost + c.cost + 0.8,
         });
       }
     }
+    return next;
+    }
+
     if (!next.length) { log.push('no expansions possible'); break; }
     next.sort((x, y) => x.cost - y.cost);
     beam = next.slice(0, beamWidth);
@@ -278,8 +391,8 @@ export function manualTree(rootSoup, planes) {
       if (depthOf(a) < 5 || depthOf(b) < 5) { next.push(piece); continue; }
       const sec = sectionLoops(piece.soup, identityTris(piece.soup), pl.n, pl.d);
       const boundary = sectionBoundary3D(sec);
-      const pa = mk(a, [...piece.cutFaces, { n: pl.n.map((v) => -v), boundary }]);
-      const pb = mk(b, [...piece.cutFaces, { n: pl.n.slice(), boundary }]);
+      const pa = mk(a, [...piece.cutFaces, { n: pl.n.map((v) => -v), boundary, plane: { n: pl.n, d: pl.d } }]);
+      const pb = mk(b, [...piece.cutFaces, { n: pl.n.slice(), boundary, plane: { n: pl.n, d: pl.d } }]);
       outPlanes.push({ n: pl.n, d: pl.d, parentId: piece.id, aId: pa.id, bId: pb.id });
       next.push(pa, pb);
     }

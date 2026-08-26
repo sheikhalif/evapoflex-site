@@ -84,9 +84,32 @@ function packGroup(order, bed, gap, exclude) {
   return plates;
 }
 
-/** MAXRECTS-lite: scan positions on a coarse grid, best-short-side-fit, then push toward the crowd. */
+/**
+ * Cap a convex hull's vertex count by keeping every k-th vertex plus the four
+ * axis extremes. The SAT overlap test is O(n*m) per candidate position and the
+ * position scan tries thousands of candidates, so a raw 100-vertex hull turned
+ * a four-part plate into a 57-second arrange. Twenty vertices keep the shape
+ * within a fraction of a millimetre at these sizes.
+ */
+function slimHull(hull, maxPts = 20) {
+  if (hull.length <= maxPts) return hull;
+  const keep = new Set();
+  let loX = 0, hiX = 0, loY = 0, hiY = 0;
+  hull.forEach((p, i) => {
+    if (p[0] < hull[loX][0]) loX = i;
+    if (p[0] > hull[hiX][0]) hiX = i;
+    if (p[1] < hull[loY][1]) loY = i;
+    if (p[1] > hull[hiY][1]) hiY = i;
+  });
+  [loX, hiX, loY, hiY].forEach((i) => keep.add(i));
+  const stride = Math.ceil(hull.length / (maxPts - keep.size));
+  for (let i = 0; i < hull.length; i += stride) keep.add(i);
+  return [...keep].sort((a, b) => a - b).map((i) => hull[i]);
+}
+
+/** MAXRECTS-lite: scan positions on a coarse grid, first fit, then push toward the crowd. */
 function tryPlace(plate, it, bed, gap, exclude) {
-  const hull = convexHull(it.footprint);
+  const hull = slimHull(convexHull(it.footprint));
   const rect = minAreaRect(hull);
   const rots = [-rect.angle, -rect.angle + Math.PI / 2];
   if (plate.placements.length === 0) rots.push(0, Math.PI / 4);
@@ -99,16 +122,19 @@ function tryPlace(plate, it, bed, gap, exclude) {
     for (const [x, y] of poly0) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
     const w = x1 - x0, h = y1 - y0;
     if (w + 2 * gap > bed.x || h + 2 * gap > bed.y) continue;
-    for (let py = gap - y0; py + y0 + h <= bed.y - gap + 0.01; py += step) {
+    // Scan bottom-left first-fit per rotation; the bottom-most, left-most spot
+    // in the first rotation that lands wins. Scanning the whole grid for a
+    // marginally better score paid its cost in wall-clock, not in plates.
+    let found = null;
+    for (let py = gap - y0; py + y0 + h <= bed.y - gap + 0.01 && !found; py += step) {
       for (let px = gap - x0; px + x0 + w <= bed.x - gap + 0.01; px += step) {
         const poly = translatePoly(poly0, px, py);
         if (collides(plate, poly, gap) || hitsExclude(poly, exclude, gap)) continue;
-        // Best-short-side: prefer snug against what is already there (low x+y).
-        const score = px + py;
-        if (!best || score < best.score) best = { rot, px, py, poly, score };
-        break;      // first fit in this row is the leftmost - move to next row
+        found = { rot, px, py, poly, score: px + py };
+        break;
       }
     }
+    if (found && (!best || found.score < best.score)) best = found;
   }
   if (!best) return false;
 
@@ -117,13 +143,13 @@ function tryPlace(plate, it, bed, gap, exclude) {
     ? centroidOfPlacements(plate)
     : [bed.x / 2, bed.y / 2];
   let poly = best.poly, px = best.px, py = best.py;
-  for (let iter = 0; iter < 200; iter++) {
+  for (let iter = 0; iter < 60; iter++) {
     const c = polyCentroid(poly);
     const dx = target[0] - c[0], dy = target[1] - c[1];
     const l = Math.hypot(dx, dy);
     if (l < 1) break;
     const nx = px + dx / l, ny = py + dy / l;
-    const cand = translatePoly(rotatePoly(convexHull(it.footprint), best.rot), nx, ny);
+    const cand = translatePoly(rotatePoly(hull, best.rot), nx, ny);
     if (collides(plate, cand, gap) || outOfBed(cand, bed, gap) || hitsExclude(cand, exclude, gap)) break;
     poly = cand; px = nx; py = ny;
   }

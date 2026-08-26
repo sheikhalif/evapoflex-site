@@ -39,8 +39,20 @@ const FIT_DIRS = (() => {
  */
 export function fitsWithJoints(pts, cutFaces, bed, prot, margin = 2) {
   const all = pts.slice();
-  for (const f of cutFaces) for (const p of f.boundary) {
-    all.push([p[0] + f.n[0] * prot, p[1] + f.n[1] * prot, p[2] + f.n[2] * prot]);
+  for (const f of cutFaces) {
+    // A jointless seam adds no boss and no waffle - inflating it by a joint
+    // protrusion that will never exist once cost a wheel quadrant its verdict
+    // by 0.4 mm.
+    // f.prot, when present, is the measured protrusion of the joint actually
+    // placed on this face - far tighter than the worst-case bound for the
+    // biggest joint the tool can make. The bound once failed a 242 mm wheel
+    // quadrant by inflating it with a 25 mm joint's boss that the placement
+    // pass then refused to place at all.
+    const p0 = f.jointless ? 0 : (f.prot ?? prot);
+    if (p0 === 0) continue;
+    for (const p of f.boundary) {
+      all.push([p[0] + f.n[0] * p0, p[1] + f.n[1] * p0, p[2] + f.n[2] * p0]);
+    }
   }
   for (const up of FIT_DIRS) {
     const size = extentUnder(all, up);
