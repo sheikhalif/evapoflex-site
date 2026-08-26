@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rig Console — Evapoflex</title>
+<link rel="icon" type="image/png" href="./assets/images/favicon.png">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Verdana,Geneva,sans-serif;color:#1a1e2a;background:#f5f4f0;
+     -webkit-font-smoothing:antialiased}
+.nz{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:0.035;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+
+/* Nav — matches index.html */
+.nv{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;
+    justify-content:space-between;padding:12px 48px;background:rgba(245,244,240,0.92);
+    backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+    border-bottom:1px solid rgba(45,124,181,0.12)}
+.nv-logo{display:flex;align-items:center;gap:8px;text-decoration:none;font-weight:600;
+         font-size:18px;color:#2d7cb5;letter-spacing:-0.02em}
+.nv-links{display:flex;gap:30px;align-items:center}
+.nv-link{font-size:12px;font-weight:500;letter-spacing:0.05em;text-transform:uppercase;
+         color:rgba(0,0,0,0.45);cursor:pointer;transition:color .3s;background:none;border:none;
+         font-family:inherit;text-decoration:none}
+.nv-link:hover,.nv-link.on{color:#2d7cb5}
+.who{font-size:11px;color:rgba(0,0,0,0.35);letter-spacing:0.03em}
+.who b{color:#2d7cb5;font-weight:600}
+
+.wrap{position:relative;z-index:1;max-width:1320px;margin:0 auto;padding:104px 48px 80px}
+.sec-label{font-size:10px;font-weight:600;letter-spacing:0.2em;text-transform:uppercase;
+           color:#2d7cb5;margin-bottom:12px}
+.sec-title{font-size:32px;font-weight:300;line-height:1.1;margin-bottom:10px}
+.sec-desc{font-size:15px;font-weight:300;color:rgba(0,0,0,0.45);line-height:1.7;max-width:620px}
+.head{margin-bottom:34px}
+
+/* Live badge */
+.livebar{display:flex;align-items:center;gap:12px;margin-bottom:22px;flex-wrap:wrap}
+.badge{display:inline-flex;align-items:center;gap:7px;padding:7px 14px;border-radius:60px;
+       font-size:10px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;
+       background:rgba(45,124,181,0.08);color:#2d7cb5}
+.badge .d{width:7px;height:7px;border-radius:50%;background:currentColor}
+.badge.live{background:rgba(34,197,94,0.1);color:#22c55e}
+.badge.live .d{animation:pulse 1.6s ease-in-out infinite}
+.badge.down{background:rgba(239,68,68,0.09);color:#ef4444}
+.badge.rec{background:rgba(239,68,68,0.1);color:#ef4444}
+.badge.warn{background:rgba(194,65,12,0.14);color:#c2410c}
+.badge.paused{background:rgba(194,65,12,0.16);color:#c2410c}
+
+/* Attention banner — the rig runs unattended, so a problem has to be loud */
+.alert{padding:14px 20px;border-radius:12px;margin-bottom:22px;font-size:13px;line-height:1.6;
+       background:rgba(194,65,12,0.1);border:1px solid rgba(194,65,12,0.35);color:#c2410c}
+.alert.bad{background:rgba(239,68,68,0.08);border-color:rgba(239,68,68,0.3);color:#c2410c}
+.alert b{font-weight:600}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* Layout */
+.grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:26px;align-items:start}
+
+.panel{background:rgba(255,255,255,0.66);border:1px solid rgba(45,124,181,0.13);
+       border-radius:14px;overflow:hidden}
+.panel-h{display:flex;align-items:center;justify-content:space-between;padding:15px 20px;
+         border-bottom:1px solid rgba(45,124,181,0.1)}
+.panel-t{font-size:11px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;
+         color:rgba(0,0,0,0.5)}
+.panel-b{padding:20px}
+
+/* Video */
+.stage{position:relative;background:#0a0b0d;aspect-ratio:16/9;display:flex;align-items:center;
+       justify-content:center}
+#feed{width:100%;height:100%;object-fit:contain;display:block}
+#ovl{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.nofeed{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+        justify-content:center;gap:12px;color:rgba(255,255,255,0.4);font-size:13px;
+        text-align:center;padding:24px;line-height:1.7}
+.nofeed b{color:rgba(255,255,255,0.7);font-size:15px;font-weight:400}
+.nofeed a{color:#4a9fd4}
+
+/* Annotation layer toggles, over the video */
+.ann-bar{position:absolute;left:12px;bottom:12px;z-index:6;display:flex;gap:6px;flex-wrap:wrap;
+         max-width:calc(100% - 24px)}
+.ann-btn{padding:6px 11px;font-size:9px;font-weight:600;letter-spacing:0.09em;text-transform:uppercase;
+         font-family:inherit;border-radius:20px;cursor:pointer;transition:all .2s;
+         background:rgba(0,0,0,0.45);color:rgba(255,255,255,0.5);
+         border:1px solid rgba(255,255,255,0.14);backdrop-filter:blur(8px);
+         -webkit-backdrop-filter:blur(8px)}
+.ann-btn:hover{color:rgba(255,255,255,0.85)}
+.ann-btn.on{background:rgba(74,159,212,0.85);color:#fff;border-color:transparent}
+.ann-btn[data-layer="master"]{margin-right:6px}
+.ann-bar.off .ann-btn:not([data-layer="master"]){opacity:.35;pointer-events:none}
+
+/* Algorithm panel (admin) */
+.tk-select{width:100%;padding:9px 10px;font-family:inherit;font-size:12px;
+           border:1px solid rgba(0,0,0,0.14);border-radius:8px;background:#fff;
+           color:#1a1e2a;cursor:pointer}
+.tk-meta{margin-top:10px;font-size:11px;line-height:1.6;color:rgba(0,0,0,0.5)}
+.tk-meta .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;
+               color:rgba(0,0,0,0.38)}
+.tk-meta .dim{color:rgba(0,0,0,0.35)}
+.tk-row{margin-top:12px}
+.tk-note{margin-top:10px;font-size:11px;line-height:1.6;min-height:1em}
+.tk-note.good{color:#22c55e}
+.tk-note.bad{color:#ef4444}
+
+/* Stat cards */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:rgba(45,124,181,0.1)}
+.stat{background:rgba(255,255,255,0.75);padding:16px 18px}
+.stat .k{font-size:9px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;
+         color:rgba(0,0,0,0.38);margin-bottom:6px}
+.stat .v{font-size:22px;font-weight:300;font-variant-numeric:tabular-nums;color:#1a1e2a;
+         line-height:1.15}
+.stat .v small{font-size:11px;color:rgba(0,0,0,0.35);margin-left:3px}
+.stat.hero .v{font-size:30px;color:#2d7cb5}
+
+/* Meters */
+.meter{margin-bottom:15px}
+.meter:last-child{margin-bottom:0}
+.meter-l{display:flex;justify-content:space-between;font-size:11px;margin-bottom:6px}
+.meter-l span:first-child{color:rgba(0,0,0,0.5)}
+.meter-l span:last-child{font-weight:600;font-variant-numeric:tabular-nums;color:#2d7cb5}
+.meter-t{height:5px;background:rgba(45,124,181,0.1);border-radius:3px;overflow:hidden}
+.meter-f{height:100%;background:linear-gradient(90deg,#2d7cb5,#4a9fd4);border-radius:3px;
+         transition:width .5s cubic-bezier(.16,1,.3,1)}
+
+/* Chart */
+#chart{width:100%;height:190px;display:block}
+
+/* KV rows */
+.kv{display:flex;justify-content:space-between;padding:9px 0;font-size:12px;
+    border-bottom:1px solid rgba(45,124,181,0.07)}
+.kv:last-child{border-bottom:none}
+.kv .k{color:rgba(0,0,0,0.42)}
+.kv .v{font-weight:600;font-variant-numeric:tabular-nums}
+
+/* Controls */
+.ctrls{display:flex;gap:10px;flex-wrap:wrap}
+.btn{padding:12px 22px;font-size:11px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;
+     border-radius:60px;cursor:pointer;font-family:inherit;border:none;transition:all .3s}
+.btn-p{background:#2d7cb5;color:#fff}
+.btn-p:hover{background:#4a9fd4}
+.btn-g{background:transparent;color:#2d7cb5;border:1.5px solid rgba(45,124,181,0.3)}
+.btn-g:hover{border-color:#2d7cb5}
+.btn-d{background:#ef4444;color:#fff}
+.btn-d:hover{background:#ef4444}
+.btn[disabled]{opacity:.4;cursor:default}
+.inp{padding:11px 14px;font-size:14px;font-family:inherit;border:1.5px solid rgba(45,124,181,0.18);
+     border-radius:9px;outline:none;background:#fff;width:100%;margin-bottom:10px}
+.inp:focus{border-color:#2d7cb5}
+
+.toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:#1a1e2a;color:#fff;
+       padding:13px 24px;border-radius:10px;font-size:13px;z-index:400;opacity:0;
+       transition:opacity .3s;pointer-events:none;max-width:90vw;text-align:center}
+.toast.show{opacity:1}
+
+@media(max-width:1040px){
+  .grid{grid-template-columns:1fr}
+  .wrap{padding:96px 24px 60px}
+  .nv{padding:12px 22px}
+  .nv-links{gap:16px}
+}
+@media(max-width:640px){
+  .stats{grid-template-columns:repeat(2,1fr)}
+  /* Collapse the nav on small screens, but never the auth links: this page is
+     public, so a phone visitor arrives signed out and needs a way in. */
+  .nv-link:not(.on):not(#signin):not(#out){display:none}
+}
+</style>
+</head>
+<body>
+<div class="nz"></div>
+
+<nav class="nv">
+  <a class="nv-logo" href="./index.html">evapoflex</a>
+  <div class="nv-links">
+    <a class="nv-link" href="./live.html">Live Feed</a>
+    <a class="nv-link on" href="./console.html">Console</a>
+    <a class="nv-link" href="./runs.html" id="nav-runs" style="display:none">Test Runs</a>
+    <a class="nv-link" href="./archive.html">Models</a>
+    <span class="who" id="who"></span>
+    <a class="nv-link" href="./login.html?next=console.html" id="signin"
+       style="display:none">Sign in</a>
+    <a class="nv-link" href="#" id="out" style="display:none">Sign out</a>
+  </div>
+</nav>
+
+<div class="wrap">
+  <div class="head">
+    <div class="sec-label">Rig Console</div>
+    <h1 class="sec-title">Rig Console</h1>
+    <p class="sec-desc">A continuous feed from the rig camera. Every frame is tracked as it arrives —
+      the numbers below are computed the same way as the archived test summaries.</p>
+  </div>
+
+  <div class="livebar">
+    <span class="badge" id="b-feed"><span class="d"></span><span id="b-feed-t">Connecting</span></span>
+    <span class="badge" id="b-run" style="display:none"><span class="d"></span><span id="b-run-t"></span></span>
+    <span class="badge" id="b-lock"><span class="d"></span><span id="b-lock-t">Lock —</span></span>
+    <span class="badge" id="b-backfill" style="display:none"><span class="d"></span><span id="b-backfill-t"></span></span>
+  </div>
+
+  <div class="alert" id="alert" style="display:none"><span id="alert-t"></span></div>
+
+  <div class="grid">
+    <!-- Left column -->
+    <div>
+      <div class="panel" style="margin-bottom:26px">
+        <div class="stage">
+          <img id="feed" alt="Live rig feed">
+          <canvas id="ovl"></canvas>
+
+          <div class="ann-bar" id="ann-bar">
+            <button class="ann-btn on" data-layer="master" title="Show or hide all tracking annotations">Annotations</button>
+            <button class="ann-btn on" data-layer="hub">Hub</button>
+            <button class="ann-btn on" data-layer="circle">Rim circle</button>
+            <button class="ann-btn on" data-layer="markers">Tapes</button>
+            <button class="ann-btn on" data-layer="spokes">Spokes</button>
+            <button class="ann-btn" data-layer="labels">Angles</button>
+            <button class="ann-btn" data-layer="rejected">Rejected</button>
+            <button class="ann-btn" data-layer="static">Fixtures</button>
+          </div>
+
+          <div class="nofeed" id="nofeed">
+            <b>No camera connected</b>
+            <span>Open <a href="./capture.html">the camera page</a> on the phone at the rig
+              and press Start streaming.</span>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat hero"><div class="k">Current RPM</div><div class="v" id="s-rpm">—</div></div>
+          <div class="stat"><div class="k">Average RPM</div><div class="v" id="s-avg">—</div></div>
+          <div class="stat"><div class="k">Revolutions</div><div class="v" id="s-rev">—</div></div>
+          <div class="stat"><div class="k">Tracking For</div><div class="v" id="s-run">—</div></div>
+          <div class="stat"><div class="k">Peak RPM</div><div class="v" id="s-peak">—</div></div>
+          <div class="stat"><div class="k">Best 30s</div><div class="v" id="s-best">—</div></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-h">
+          <div class="panel-t">Rotation Rate — last 5 minutes</div>
+          <div class="panel-t" style="color:#2d7cb5" id="chart-note"></div>
+        </div>
+        <div class="panel-b"><canvas id="chart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Right column -->
+    <div>
+      <div class="panel" style="margin-bottom:26px">
+        <div class="panel-h"><div class="panel-t">Quality Scores</div></div>
+        <div class="panel-b">
+          <div class="meter">
+            <div class="meter-l"><span>Motion</span><span id="m-motion">—</span></div>
+            <div class="meter-t"><div class="meter-f" id="f-motion" style="width:0"></div></div>
+          </div>
+          <div class="meter">
+            <div class="meter-l"><span>Continuity</span><span id="m-cont">—</span></div>
+            <div class="meter-t"><div class="meter-f" id="f-cont" style="width:0"></div></div>
+          </div>
+          <div class="meter">
+            <div class="meter-l"><span>Efficiency</span><span id="m-eff">—</span></div>
+            <div class="meter-t"><div class="meter-f" id="f-eff" style="width:0"></div></div>
+          </div>
+          <div class="meter">
+            <div class="meter-l"><span>Marker lock</span><span id="m-lock">—</span></div>
+            <div class="meter-t"><div class="meter-f" id="f-lock" style="width:0"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" id="run-panel" style="margin-bottom:26px;display:none">
+        <div class="panel-h"><div class="panel-t">Run Control</div></div>
+        <div class="panel-b">
+          <div id="run-idle">
+            <input class="inp" id="design" value="EED01M" placeholder="Design code">
+            <input class="inp" id="label" placeholder="Label (optional)">
+            <div class="ctrls"><button class="btn btn-p" id="start">Start recording</button></div>
+          </div>
+          <div id="run-active" style="display:none">
+            <div class="kv"><span class="k">Run</span><span class="v" id="ra-key">—</span></div>
+            <div class="kv"><span class="k">Measured time</span><span class="v" id="ra-el">—</span></div>
+            <div class="kv"><span class="k">Samples saved</span><span class="v" id="ra-n">—</span></div>
+            <div class="kv" id="ra-unsaved-row" style="display:none">
+              <span class="k">Awaiting save</span><span class="v" id="ra-unsaved">—</span></div>
+            <div class="kv" id="ra-pause-row" style="display:none">
+              <span class="k">Paused total</span><span class="v" id="ra-paused">—</span></div>
+            <div class="ctrls" style="margin-top:14px">
+              <button class="btn btn-g" id="pause">Pause</button>
+              <button class="btn btn-d" id="stop">Stop &amp; save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-bottom:26px">
+        <div class="panel-h"><div class="panel-t">Feed Health</div></div>
+        <div class="panel-b">
+          <div class="kv"><span class="k">Source</span><span class="v" id="h-src">—</span></div>
+          <div class="kv"><span class="k">Frame rate</span><span class="v" id="h-fps">—</span></div>
+          <div class="kv"><span class="k">Resolution</span><span class="v" id="h-res">—</span></div>
+          <div class="kv"><span class="k">Feed uptime</span><span class="v" id="h-up">—</span></div>
+        </div>
+      </div>
+
+      <div class="card" id="tracker-panel" style="display:none">
+        <h3>Algorithm</h3>
+        <div class="pad">
+          <select id="tk-select" class="tk-select"></select>
+          <div class="tk-meta" id="tk-meta"></div>
+          <div class="tk-row">
+            <button class="btn ghost" id="tk-reload"
+                    title="Re-import algorithm files from disk without dropping the feed">Reload from disk</button>
+          </div>
+          <div class="tk-note" id="tk-note"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Feed health</h3>
+        <div class="pad">
+          <div class="kv"><span class="k">Camera→server latency</span><span class="v" id="h-lat">—</span></div>
+          <div class="kv"><span class="k">Tracking time / frame</span><span class="v" id="h-proc">—</span></div>
+          <div class="kv"><span class="k">Tapes matched</span><span class="v" id="h-tapes">—</span></div>
+          <div class="kv"><span class="k">Frames tracked</span><span class="v" id="h-seen">—</span></div>
+          <div class="kv"><span class="k">Frames missed</span><span class="v" id="h-miss">—</span></div>
+          <div class="kv"><span class="k">Viewers</span><span class="v" id="h-view">—</span></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-h"><div class="panel-t">Lifetime</div></div>
+        <div class="panel-b">
+          <div class="kv"><span class="k">Total recorded</span><span class="v" id="t-time">—</span></div>
+          <div class="kv"><span class="k">Total revolutions</span><span class="v" id="t-rev">—</span></div>
+          <div class="kv"><span class="k">Runs completed</span><span class="v" id="t-runs">—</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let me = null, ws = null, lastOverlay = null, reconnectDelay = 1000;
+let objectUrl = null, lastStats = null;
+
+/* RPM history for the chart: {t (ms), rpm} over a 5 minute window */
+const HISTORY_MS = 5*60*1000;
+const history = [];
+
+let toastTimer;
+function toast(msg){
+  const t=$('toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),3000);
+}
+
+async function api(path, opts={}){
+  const r = await fetch(path, {credentials:'same-origin',
+    headers:{'Content-Type':'application/json'}, ...opts});
+  const data = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.detail || r.statusText);
+  return data;
+}
+
+/* ---------------- boot ---------------- */
+(async function init(){
+  // The feed is public. A signed-out visitor gets the video and the numbers;
+  // signing in only adds the ability to change something.
+  try{ me = await api('/api/auth/me'); }
+  catch{ me = null; }
+
+  const can = p => !!me && me.permissions.includes(p);
+  $('who').innerHTML = me ? `<b>${me.username}</b> · ${me.role}` : '';
+  $('out').style.display   = me ? '' : 'none';
+  $('signin').style.display = me ? 'none' : '';
+  $('nav-runs').style.display = can('view') ? '' : 'none';
+
+  if(can('control')) $('run-panel').style.display='block';
+  if(can('admin'))   initTrackerPanel();
+
+  $('out').onclick = async e => {
+    e.preventDefault();
+    await api('/api/auth/logout',{method:'POST'}).catch(()=>{});
+    location.reload();
+  };
+  connect();
+  requestAnimationFrame(drawOverlay);
+  setInterval(drawChart, 1000);
+})();
+
+/* ---------------- algorithm switching (admin only) ---------------- */
+async function initTrackerPanel(){
+  $('tracker-panel').style.display = 'block';
+  await refreshTrackers();
+
+  $('tk-select').onchange = async e => {
+    const name = e.target.value;
+    try{
+      await api('/api/trackers/select', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({name})});
+      note(`Switched to ${name}.`, false);
+    }catch(err){
+      // 409 means a run is recording: switching would splice two algorithms
+      // into one set of results, so it is refused rather than silently done.
+      const stop = /recording/i.test(err.message);
+      note(err.message + (stop ? ' Stop the run, then switch.' : ''), true);
+    }
+    await refreshTrackers();
+  };
+
+  $('tk-reload').onclick = async () => {
+    $('tk-reload').disabled = true;
+    try{
+      const r = await api('/api/trackers/reload', {method:'POST'});
+      const errs = Object.keys(r.errors || {});
+      if(errs.length) note(`Reloaded, but ${errs.join(', ')} failed to import — see the server log.`, true);
+      else note(`Reloaded from disk · running ${r.current} @ ${r.hash}`, false);
+    }catch(err){ note(err.message, true); }
+    $('tk-reload').disabled = false;
+    await refreshTrackers();
+  };
+}
+
+function note(text, bad){
+  const el = $('tk-note');
+  el.textContent = text;
+  el.className = 'tk-note' + (bad ? ' bad' : ' good');
+}
+
+async function refreshTrackers(){
+  let info;
+  try{ info = await api('/api/trackers'); }catch{ return; }
+  const sel = $('tk-select');
+  sel.innerHTML = info.available.map(t =>
+    `<option value="${t.name}"${t.name===info.current?' selected':''}>${t.label}</option>`
+  ).join('');
+  const cur = info.available.find(t => t.name === info.current);
+  $('tk-meta').innerHTML = cur
+    ? `${cur.description}<br><span class="mono">${cur.source} @ ${info.hash}</span>
+       <br><span class="dim">expects ${cur.expects}</span>`
+    : '';
+  const errs = Object.keys(info.errors || {});
+  if(errs.length) note(`${errs.join(', ')} failed to import`, true);
+}
+
+/* ---------------- websocket ---------------- */
+function connect(){
+  const proto = location.protocol==='https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws/live?video=1`);
+  ws.binaryType = 'blob';
+
+  ws.onopen = () => { reconnectDelay = 1000; };
+  ws.onmessage = ev => {
+    if(typeof ev.data !== 'string'){ showFrame(ev.data); return; }
+    let m; try{ m = JSON.parse(ev.data); }catch{ return; }
+    if(m.type==='frame')      lastOverlay = m;
+    else if(m.type==='stats'){ lastStats = m; applyStats(m); }
+    else if(m.type==='event') onEvent(m);
+  };
+  ws.onclose = ev => {
+    if(ev.code===4401){ location.href='./login.html?next=live.html'; return; }
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay*1.7, 20000);
+  };
+}
+
+function onEvent(m){
+  if(m.event==='run_started') toast(`Recording started: ${m.run_key}`);
+  if(m.event==='run_stopped'){
+    const s = m.summary;
+    toast(`Run saved: ${s.id} · ${s.metrics.runtime} · ${s.metrics.avg_rpm} RPM`);
+  }
+  if(m.event==='run_paused')  toast(`Paused by ${m.by}: ${m.reason}`);
+  if(m.event==='run_resumed') toast(`Resumed after ${Math.round(m.paused_for_s)}s`);
+  if(m.event==='backfill_started')
+    toast(`Camera reconnected — restoring ${m.count} buffered frames`);
+  if(m.event==='backfill_done')
+    toast(`Restored ${m.replayed} frames` + (m.dropped ? `, ${m.dropped} lost` : ''));
+}
+
+function showFrame(blob){
+  $('nofeed').style.display='none';
+  const url = URL.createObjectURL(blob);
+  const img = $('feed');
+  // Revoke only after the new frame has decoded; releasing the previous URL
+  // any earlier makes Safari flash a broken image between frames.
+  const prev = objectUrl;
+  img.onload = () => { if(prev) URL.revokeObjectURL(prev); };
+  img.src = url;
+  objectUrl = url;
+}
+
+/* ---------------- stats ---------------- */
+function applyStats(s){
+  const f=s.feed, tr=s.tracking, m=s.metrics, run=s.run, tot=s.totals;
+  const bfill = s.backfill || {};
+
+  // Feed badge
+  const bf=$('b-feed');
+  bf.className = 'badge ' + (f.up ? 'live' : 'down');
+  $('b-feed-t').textContent = f.up ? `Live · ${f.fps} fps` : 'Camera offline';
+  if(!f.up){ $('nofeed').style.display='flex'; }
+
+  // Run badge
+  const br=$('b-run');
+  br.style.display = run.active ? 'inline-flex' : 'none';
+  br.className = 'badge ' + (run.paused ? 'paused' : 'rec');
+  if(run.active) $('b-run-t').textContent = run.paused
+    ? `Paused · ${run.paused_for}` : `Recording · ${run.elapsed}`;
+
+  // Lock badge
+  const bl=$('b-lock');
+  bl.className = 'badge ' + (tr.locked ? 'live' : (run.paused ? '' : 'warn'));
+  $('b-lock-t').textContent = run.paused ? 'Tracking suspended'
+    : (tr.locked ? `Marker locked · ${tr.angle?.toFixed(0)}°` : 'Marker not found');
+
+  // Backfill badge
+  const bb=$('b-backfill');
+  bb.style.display = bfill.active ? 'inline-flex' : 'none';
+  bb.className = 'badge warn';
+  if(bfill.active) $('b-backfill-t').textContent =
+    `Restoring buffered data · ${bfill.seen}/${bfill.expected}`;
+
+  renderAlert(s);
+
+  // Headline stats
+  num('s-rpm', m.current_rpm, 3);
+  num('s-avg', m.avg_rpm, 3);
+  num('s-rev', m.revolutions, 2);
+  $('s-run').textContent  = m.runtime || '—';
+  num('s-peak', m.peak_rpm, 3);
+  num('s-best', m.best_30s_rpm, 3);
+
+  meter('motion', m.motion_pct);
+  meter('cont',   m.continuity_pct);
+  meter('eff',    m.efficiency_pct);
+  meter('lock',   tr.lock_quality);
+
+  $('h-src').textContent  = f.source || '—';
+  $('h-fps').textContent  = f.up ? f.fps : '—';
+  $('h-res').textContent  = f.resolution || '—';
+  $('h-up').textContent   = f.uptime || '—';
+  $('h-lat').textContent  = f.latency_ms != null ? f.latency_ms + ' ms' : '—';
+  $('h-proc').textContent = f.proc_ms ? f.proc_ms + ' ms' : '—';
+  $('h-tapes').textContent = tr.n_markers != null
+    ? `${tr.n_markers}${tr.spare_markers ? ` (+${tr.spare_markers} spare)` : ' (no spare)'}`
+    : '—';
+  $('h-seen').textContent = tr.seen.toLocaleString();
+  $('h-miss').textContent = tr.missed.toLocaleString();
+  $('h-view').textContent = f.viewers;
+
+  $('t-time').textContent = tot.tracked;
+  $('t-rev').textContent  = tot.revolutions.toLocaleString();
+  $('t-runs').textContent = tot.runs;
+
+  // Run control
+  $('run-idle').style.display   = run.active ? 'none' : 'block';
+  $('run-active').style.display = run.active ? 'block' : 'none';
+  if(run.active){
+    $('ra-key').textContent = run.key;
+    $('ra-el').textContent  = run.elapsed;
+    $('ra-n').textContent   = run.samples.toLocaleString();
+    $('ra-unsaved-row').style.display = run.unsaved ? 'flex' : 'none';
+    $('ra-unsaved').textContent = run.unsaved + ' samples';
+    $('ra-pause-row').style.display = run.pause_count ? 'flex' : 'none';
+    $('ra-paused').textContent = `${run.paused_total} (${run.pause_count}×)`;
+    $('pause').textContent = run.paused ? 'Resume' : 'Pause';
+    $('pause').className   = run.paused ? 'btn btn-p' : 'btn btn-g';
+    $('stop').disabled     = run.paused;
+  }
+
+  if(m.current_rpm != null && f.up){
+    history.push({t: Date.now(), rpm: m.current_rpm});
+    const cutoff = Date.now() - HISTORY_MS;
+    while(history.length && history[0].t < cutoff) history.shift();
+  }
+}
+
+/* The rig runs unattended for days, so the dashboard has to answer "is this
+   still OK?" at a glance rather than making someone read six numbers. Ordered
+   worst-first; only the top problem is shown. */
+function renderAlert(s){
+  const f=s.feed, tr=s.tracking, run=s.run, bfill=s.backfill||{};
+  const el=$('alert'), txt=$('alert-t');
+  let msg=null, bad=false;
+
+  if(run.active && !f.up){
+    msg = `<b>Camera offline while recording.</b> The phone keeps capturing to its own
+           storage and will replay the gap when it reconnects — the run is still going.
+           Last frame ${f.age_s}s ago.`;
+    bad = true;
+  } else if(bfill.dropped){
+    msg = `<b>${bfill.dropped} frames were lost</b> — the outage outlasted the phone's
+           buffer. That interval is marked as a gap in this run rather than guessed at.`;
+    bad = true;
+  } else if(run.paused){
+    msg = `<b>Paused for ${run.pause_reason || 'maintenance'}</b> by ${run.paused_by || '—'}.
+           Nothing is being measured, so anything you do to the wheel now stays out of the
+           results. Press Resume when you are done.`;
+  } else if(bfill.active){
+    msg = `Catching up on data buffered during an outage — ${bfill.seen} of
+           ${bfill.expected} frames restored.`;
+  } else if(tr.locked && tr.hub_source && tr.hub_source !== 'shaft marker'){
+    // The shaft tape defines the axis. Without it the centre is inferred, and
+    // an inferred centre biases every bearing — measured 13% low with the
+    // shaft marker absent entirely. Far better to say so than to keep
+    // reporting confident-looking numbers.
+    msg = `<b>Shaft marker not visible — wheel centre is being inferred
+           (${tr.hub_source}).</b> Readings drift while this persists. Check
+           the centre tape is in frame, lit, and still stuck on; the
+           <b>Hub</b> layer shows where the axis is currently assumed to be.`;
+    bad = true;
+  } else if(tr.locked && tr.spare_markers === 0 && tr.fixtures > 0){
+    // The only combination that measurably misreads: at the two-tape floor a
+    // stray green object is a third of the constellation and can outvote the
+    // real tapes. With a spare tape in view it gets outvoted instead.
+    msg = `<b>Running with no spare tape while ${tr.fixtures} stationary green
+           object${tr.fixtures>1?'s are':' is'} in frame.</b> Only ${tr.n_markers}
+           tapes are visible, so there is no redundancy to outvote a stray
+           marker. Turn on the <b>Fixtures</b> layer to see what is being
+           ignored, and clear it from the shot if you can.`;
+    bad = true;
+  } else if(run.active && !tr.locked && tr.lock_quality < 60){
+    msg = `<b>The marker is not being found.</b> Only ${tr.lock_quality}% of frames have
+           locked. Check lighting, or re-sample the marker colour from the camera page.`;
+    bad = true;
+  } else if(run.active && f.up && !tr.locked){
+    msg = `Marker temporarily lost (${tr.blobs} candidate blobs in range). Recording
+           continues; brief dropouts are normal as the marker passes obstructions.`;
+  }
+
+  el.style.display = msg ? 'block' : 'none';
+  el.className = 'alert' + (bad ? ' bad' : '');
+  if(msg) txt.innerHTML = msg;
+}
+
+function num(id, v, dp){
+  $(id).textContent = (v==null) ? '—' : (+v).toFixed(dp);
+}
+function meter(name, pct){
+  if(pct==null) return;
+  $('m-'+name).textContent = pct.toFixed(1)+'%';
+  $('f-'+name).style.width = Math.max(0,Math.min(100,pct))+'%';
+}
+
+/* ---------------- tracking overlay ----------------
+   Draws what the tracker actually saw this frame, so a bad lock is visible
+   rather than something you infer from a number drifting. Layers are
+   independently toggleable — the full set is useful while calibrating and
+   distracting once the rig is running. */
+const layers = {master:true, hub:true, circle:true, markers:true,
+                spokes:true, labels:false, rejected:false, static:false};
+
+document.querySelectorAll('.ann-btn').forEach(b => {
+  b.onclick = () => {
+    const k = b.dataset.layer;
+    layers[k] = !layers[k];
+    b.classList.toggle('on', layers[k]);
+    if(k === 'master') $('ann-bar').classList.toggle('off', !layers.master);
+  };
+});
+
+/* object-fit:contain letterboxes the frame; back out the painted rect so
+   annotations land on the wheel rather than on the black bars. */
+function paintRect(img, rect){
+  const s = Math.min(rect.width/img.naturalWidth, rect.height/img.naturalHeight);
+  const dw = img.naturalWidth*s, dh = img.naturalHeight*s;
+  return {ox:(rect.width-dw)/2, oy:(rect.height-dh)/2, dw, dh};
+}
+
+function drawOverlay(){
+  const img=$('feed'), c=$('ovl'), rect=c.getBoundingClientRect();
+  const dpr=window.devicePixelRatio||1;
+  if(c.width!==Math.round(rect.width*dpr)||c.height!==Math.round(rect.height*dpr)){
+    c.width=Math.round(rect.width*dpr); c.height=Math.round(rect.height*dpr);
+  }
+  const g=c.getContext('2d');
+  g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,rect.width,rect.height);
+
+  const o = lastOverlay;
+  if(!layers.master || !o || !img.naturalWidth){ requestAnimationFrame(drawOverlay); return; }
+  const {ox,oy,dw,dh} = paintRect(img, rect);
+  const X = nx => ox + nx*dw, Y = ny => oy + ny*dh;
+
+  const hub = o.hub ? {x:X(o.hub[0]), y:Y(o.hub[1])} : null;
+  const rad = o.radius ? o.radius*dw : 0;
+  const band = o.band ? o.band*dw : 0;
+
+  // Rim circle and the tolerance band the tracker accepts tapes within
+  if(layers.circle && hub && rad){
+    g.strokeStyle='rgba(74,159,212,.75)'; g.lineWidth=1.6;
+    g.beginPath(); g.arc(hub.x,hub.y,rad,0,Math.PI*2); g.stroke();
+    if(band){
+      g.strokeStyle='rgba(74,159,212,.2)'; g.lineWidth=1; g.setLineDash([4,4]);
+      g.beginPath(); g.arc(hub.x,hub.y,rad+band,0,Math.PI*2); g.stroke();
+      g.beginPath(); g.arc(hub.x,hub.y,Math.max(rad-band,1),0,Math.PI*2); g.stroke();
+      g.setLineDash([]);
+    }
+  }
+
+  // Spokes from the shaft to each accepted tape
+  if(layers.spokes && hub && o.markers){
+    g.strokeStyle='rgba(34,197,94,.4)'; g.lineWidth=1.2;
+    o.markers.forEach(m => {
+      g.beginPath(); g.moveTo(hub.x,hub.y); g.lineTo(X(m[0]),Y(m[1])); g.stroke();
+    });
+  }
+
+  // Rejected blobs — the right colour but off the rim circle
+  if(layers.rejected && o.rejected){
+    g.strokeStyle='rgba(239,68,68,.75)'; g.lineWidth=1.4;
+    o.rejected.forEach(p => {
+      const x=X(p[0]), y=Y(p[1]);
+      g.beginPath(); g.arc(x,y,7,0,Math.PI*2); g.stroke();
+      g.beginPath(); g.moveTo(x-5,y-5); g.lineTo(x+5,y+5);
+      g.moveTo(x+5,y-5); g.lineTo(x-5,y+5); g.stroke();
+    });
+  }
+
+  // Green things that never move — brackets, reflections, tape on the frame.
+  // Deliberately excluded from the match; shown so "why is that ignored?"
+  // has a visible answer.
+  if(layers.static && o.static){
+    g.strokeStyle='rgba(194,65,12,.8)'; g.lineWidth=1.4; g.setLineDash([3,3]);
+    o.static.forEach(p => {
+      const x=X(p[0]), y=Y(p[1]);
+      g.beginPath(); g.arc(x,y,9,0,Math.PI*2); g.stroke();
+    });
+    g.setLineDash([]);
+    if(layers.labels && o.static.length){
+      g.font='600 9px Verdana'; g.textAlign='center'; g.fillStyle='#c2410c';
+      o.static.forEach(p => g.fillText('fixture', X(p[0]), Y(p[1])+22));
+    }
+  }
+
+  // Accepted rim tapes
+  if(layers.markers && o.markers){
+    o.markers.forEach((m,i) => {
+      const x=X(m[0]), y=Y(m[1]);
+      g.fillStyle='rgba(34,197,94,.25)';
+      g.beginPath(); g.arc(x,y,10,0,Math.PI*2); g.fill();
+      g.strokeStyle='rgba(34,197,94,.95)'; g.lineWidth=2;
+      g.beginPath(); g.arc(x,y,10,0,Math.PI*2); g.stroke();
+      if(layers.labels){
+        const txt = `${m[2].toFixed(0)}°`;
+        g.font='600 11px Verdana'; g.textAlign='center';
+        const w = g.measureText(txt).width + 10;
+        g.fillStyle='rgba(0,0,0,.66)';
+        g.fillRect(x-w/2, y-30, w, 16);
+        g.fillStyle='#22c55e'; g.fillText(txt, x, y-18);
+      }
+    });
+  }
+
+  // Shaft marker / wheel centre
+  if(layers.hub && hub){
+    const known = o.hub_source === 'shaft marker';
+    g.strokeStyle = known ? 'rgba(255,255,255,.9)' : 'rgba(194,65,12,.9)';
+    g.lineWidth=1.5;
+    g.beginPath(); g.moveTo(hub.x-14,hub.y); g.lineTo(hub.x+14,hub.y);
+    g.moveTo(hub.x,hub.y-14); g.lineTo(hub.x,hub.y+14); g.stroke();
+    g.beginPath(); g.arc(hub.x,hub.y,6,0,Math.PI*2); g.stroke();
+    if(!known && layers.labels){
+      g.font='600 10px Verdana'; g.textAlign='center'; g.fillStyle='#c2410c';
+      g.fillText('hub estimated', hub.x, hub.y+30);
+    }
+  }
+
+  // Corner readout: what the tracker concluded from this frame
+  if(layers.labels){
+    const lines = [
+      `${o.n_markers ?? 0} tapes matched${o.inliers ? ` · ${o.inliers} inliers` : ''}`,
+      o.delta != null ? `Δ ${o.delta > 0 ? '+' : ''}${o.delta.toFixed(2)}° this frame` : null,
+      o.hub_source ? `hub: ${o.hub_source}` : null,
+    ].filter(Boolean);
+    g.font='11px Verdana'; g.textAlign='left';
+    lines.forEach((ln,i) => {
+      const w = g.measureText(ln).width + 14;
+      g.fillStyle='rgba(0,0,0,.6)'; g.fillRect(10, 10+i*20, w, 17);
+      g.fillStyle='rgba(255,255,255,.85)'; g.fillText(ln, 17, 23+i*20);
+    });
+  }
+  requestAnimationFrame(drawOverlay);
+}
+
+/* ---------------- chart ---------------- */
+function drawChart(){
+  const c=$('chart'), rect=c.getBoundingClientRect();
+  const dpr=window.devicePixelRatio||1;
+  c.width=Math.round(rect.width*dpr); c.height=Math.round(190*dpr);
+  const g=c.getContext('2d');
+  g.setTransform(dpr,0,0,dpr,0,0);
+  const W=rect.width, H=190, pad={l:44,r:10,t:12,b:22};
+  g.clearRect(0,0,W,H);
+
+  if(history.length < 2){
+    g.fillStyle='rgba(0,0,0,.28)'; g.font='12px Verdana'; g.textAlign='center';
+    g.fillText('Waiting for tracking data…', W/2, H/2);
+    $('chart-note').textContent='';
+    return;
+  }
+
+  const now=Date.now(), t0=now-HISTORY_MS;
+  const rpms=history.map(p=>p.rpm);
+  let lo=Math.min(0,...rpms), hi=Math.max(0,...rpms);
+  const span=Math.max(hi-lo, 0.05);
+  lo-=span*0.12; hi+=span*0.12;
+
+  const X=t=>pad.l+((t-t0)/HISTORY_MS)*(W-pad.l-pad.r);
+  const Y=v=>pad.t+(1-(v-lo)/(hi-lo))*(H-pad.t-pad.b);
+
+  // gridlines + y labels
+  g.strokeStyle='rgba(45,124,181,.1)'; g.lineWidth=1;
+  g.fillStyle='rgba(0,0,0,.34)'; g.font='9px Verdana'; g.textAlign='right';
+  for(let i=0;i<=4;i++){
+    const v=lo+(hi-lo)*i/4, y=Y(v);
+    g.beginPath(); g.moveTo(pad.l,y); g.lineTo(W-pad.r,y); g.stroke();
+    g.fillText(v.toFixed(2), pad.l-7, y+3);
+  }
+  // zero reference
+  if(lo<0 && hi>0){
+    g.strokeStyle='rgba(0,0,0,.22)';
+    g.beginPath(); g.moveTo(pad.l,Y(0)); g.lineTo(W-pad.r,Y(0)); g.stroke();
+  }
+  // x labels
+  g.textAlign='center'; g.fillStyle='rgba(0,0,0,.34)';
+  for(let i=0;i<=5;i++){
+    const mins=5-i;
+    g.fillText(mins?`-${mins}m`:'now', X(t0+HISTORY_MS*i/5), H-7);
+  }
+
+  // area + line
+  g.beginPath();
+  history.forEach((p,i)=> i?g.lineTo(X(p.t),Y(p.rpm)):g.moveTo(X(p.t),Y(p.rpm)));
+  g.lineTo(X(history[history.length-1].t), Y(Math.max(lo,0)));
+  g.lineTo(X(history[0].t), Y(Math.max(lo,0)));
+  g.closePath();
+  const grad=g.createLinearGradient(0,pad.t,0,H-pad.b);
+  grad.addColorStop(0,'rgba(45,124,181,.22)');
+  grad.addColorStop(1,'rgba(45,124,181,.02)');
+  g.fillStyle=grad; g.fill();
+
+  g.beginPath();
+  history.forEach((p,i)=> i?g.lineTo(X(p.t),Y(p.rpm)):g.moveTo(X(p.t),Y(p.rpm)));
+  g.strokeStyle='#2d7cb5'; g.lineWidth=1.8; g.lineJoin='round'; g.stroke();
+
+  const last=history[history.length-1];
+  g.fillStyle='#2d7cb5';
+  g.beginPath(); g.arc(X(last.t),Y(last.rpm),3.5,0,Math.PI*2); g.fill();
+  $('chart-note').textContent = `${last.rpm.toFixed(3)} RPM`;
+}
+
+/* ---------------- run control ---------------- */
+$('start').onclick = async () => {
+  $('start').disabled = true;
+  try{
+    await api('/api/run/start',{method:'POST', body:JSON.stringify({
+      design: $('design').value.trim() || 'EED01M',
+      label:  $('label').value.trim()
+    })});
+  }catch(e){ toast(e.message); }
+  $('start').disabled = false;
+};
+
+$('pause').onclick = async () => {
+  const btn = $('pause'); btn.disabled = true;
+  try{
+    if(btn.textContent === 'Resume'){
+      await api('/api/run/resume',{method:'POST'});
+      toast('Resumed — the tracker is re-acquiring the marker');
+    } else {
+      const reason = prompt('What are you doing? This is stored with the run.',
+                            'maintenance');
+      if(reason !== null){
+        await api('/api/run/pause',{method:'POST', body: JSON.stringify({reason})});
+        toast('Paused — nothing is being measured');
+      }
+    }
+  }catch(e){ toast(e.message); }
+  btn.disabled = false;
+};
+
+$('stop').onclick = async () => {
+  const s = lastStats && lastStats.run;
+  if(s && s.unsaved) {
+    // Reassure rather than silently appear to hang while the flush completes.
+    toast('Saving buffered samples…');
+  }
+  $('stop').disabled = true;
+  try{ await api('/api/run/stop',{method:'POST'}); }
+  catch(e){ toast(e.message); }
+  $('stop').disabled = false;
+};
+</script>
+</body>
+</html>

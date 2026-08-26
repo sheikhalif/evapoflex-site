@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design Archive — Evapoflex</title>
+<link rel="icon" type="image/png" href="./assets/images/favicon.png">
+<link rel="apple-touch-icon" href="./assets/images/favicon.png">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden}
+body{font-family:Verdana,Geneva,sans-serif;color:#1a1e2a;background:#e5e0da;-webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:Verdana,Geneva,sans-serif;font-weight:400}
+
+.nz{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:0.035;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+
+/* Nav — matches main site */
+.nv{position:fixed;top:0;left:0;right:0;z-index:100;height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 48px;background:rgba(229,224,218,0.92);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-bottom:1px solid rgba(45,124,181,0.12);box-shadow:0 1px 40px rgba(0,0,0,0.04)}
+.nv-logo{display:flex;align-items:center;gap:8px;cursor:pointer;text-decoration:none;font-weight:600;font-size:18px;color:#2d7cb5;letter-spacing:-0.02em}
+.nv-links{display:flex;gap:36px}
+.nv-link{font-size:12px;font-weight:500;letter-spacing:0.05em;text-transform:uppercase;color:rgba(0,0,0,0.45);cursor:pointer;transition:color .3s;background:none;border:none;font-family:inherit;text-decoration:none}
+.nv-link:hover{color:#2d7cb5}
+.nv-link.active{color:#2d7cb5}
+
+/* Stage — fills entire viewport below nav */
+.stage{position:fixed;top:56px;left:0;right:0;bottom:0;background:#e5e0da;overflow:hidden}
+.stage canvas{display:block;width:100%!important;height:100%!important;filter:invert(1);opacity:0;transition:opacity 1.2s cubic-bezier(.16,1,.3,1)}
+.stage.loaded canvas{opacity:1}
+
+/* Counter (bottom-right) */
+.stage-counter{position:absolute;bottom:40px;right:40px;font-size:11px;font-weight:500;letter-spacing:0.2em;text-transform:uppercase;color:rgba(0,0,0,0.4);z-index:2;pointer-events:none}
+.stage-counter span{color:#2d7cb5;font-weight:600}
+
+/* Chips — overlaid at top center */
+.chips{position:absolute;top:28px;left:50%;transform:translateX(-50%);z-index:4;display:flex;gap:8px;padding:6px;background:rgba(245,244,240,0.72);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid rgba(45,124,181,0.15);border-radius:60px;box-shadow:0 4px 24px rgba(0,0,0,0.06)}
+.chip{padding:9px 22px;border-radius:60px;border:none;background:transparent;cursor:pointer;font-family:inherit;font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:rgba(0,0,0,0.5);transition:all .3s cubic-bezier(.16,1,.3,1)}
+.chip:hover{color:#2d7cb5}
+.chip.on{background:#2d7cb5;color:#fff;box-shadow:0 3px 14px rgba(45,124,181,0.3)}
+
+/* Arrows — overlaid on left/right sides */
+.arrow{position:absolute;top:50%;transform:translateY(-50%);z-index:4;width:52px;height:52px;border-radius:50%;border:1.5px solid rgba(45,124,181,0.3);background:rgba(245,244,240,0.72);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#2d7cb5;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .3s cubic-bezier(.16,1,.3,1);font-family:inherit}
+.arrow.prev{left:32px}
+.arrow.next{right:32px}
+.arrow:hover:not(:disabled){background:#2d7cb5;color:#fff;border-color:#2d7cb5;transform:translateY(-50%) scale(1.08);box-shadow:0 8px 30px rgba(45,124,181,0.25)}
+.arrow:active:not(:disabled){transform:translateY(-50%) scale(0.96)}
+.arrow:disabled{opacity:0.25;cursor:not-allowed}
+.arrow svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+
+/* Loading — overlay shown while models load */
+.loading{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;font-size:11px;font-weight:500;letter-spacing:0.2em;text-transform:uppercase;color:rgba(0,0,0,0.45);z-index:2;transition:opacity .6s cubic-bezier(.16,1,.3,1);pointer-events:none}
+.loading.hide{opacity:0}
+.spinner{width:32px;height:32px;border:2px solid rgba(45,124,181,0.16);border-top-color:#2d7cb5;border-radius:50%;animation:spin 0.85s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Responsive */
+@media(max-width:900px){
+  .nv{padding:0 20px;height:52px}
+  .nv-links{display:none}
+  .stage{top:52px}
+  .stage-counter{bottom:26px;right:24px;font-size:10px}
+  .chips{top:18px;padding:4px;gap:4px}
+  .chip{padding:7px 14px;font-size:10px;letter-spacing:0.08em}
+  .arrow{width:42px;height:42px}
+  .arrow.prev{left:16px}
+  .arrow.next{right:16px}
+  .arrow svg{width:15px;height:15px}
+}
+</style>
+</head>
+<body>
+<div class="nz"></div>
+
+<nav class="nv">
+  <a class="nv-logo" href="./index.html">evapoflex</a>
+  <div class="nv-links">
+    <a class="nv-link" href="./index.html#how-it-works">How It Works</a>
+    <a class="nv-link" href="./index.html#configurator">Configurator</a>
+    <a class="nv-link" href="./index.html#gallery">Gallery</a>
+    <a class="nv-link" href="./live.html">Live Rig</a>
+    <a class="nv-link" href="./index.html#about">Team</a>
+  </div>
+</nav>
+
+<main class="stage" id="stage">
+  <canvas id="canvas"></canvas>
+
+  <div class="stage-counter"><span id="stageCur">01</span> / 03</div>
+
+  <div class="chips" id="chips">
+    <button class="chip on" data-idx="0">EED09</button>
+    <button class="chip"    data-idx="1">EED08</button>
+    <button class="chip"    data-idx="2">EED07</button>
+  </div>
+
+  <button class="arrow prev" id="prev" aria-label="Previous">
+    <svg viewBox="0 0 24 24"><polyline points="15,5 8,12 15,19"></polyline></svg>
+  </button>
+  <button class="arrow next" id="next" aria-label="Next">
+    <svg viewBox="0 0 24 24"><polyline points="9,5 16,12 9,19"></polyline></svg>
+  </button>
+
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <span id="loadingText">Firing up the engines</span>
+  </div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/DRACOLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+// ═════════════════════════════════════════════════════════════
+// GENERATIONS
+// ═════════════════════════════════════════════════════════════
+const GENS = [
+  { id: 'EED09', label: 'EED09', glb: './assets/models/EED09.glb' },
+  { id: 'EED08', label: 'EED08', glb: './assets/models/eed07.glb' }, // placeholder: EED07 model stands in
+  { id: 'EED07', label: 'EED07', glb: './assets/models/eed07.glb' }
+];
+
+// ═════════════════════════════════════════════════════════════
+// MATERIALS — copied directly from the EED07 GLB
+// (inspected values: rgba, roughness, metalness, alphaMode)
+// The scene is rendered dark and the canvas is CSS-inverted,
+// mirroring the main site's pipeline — this is why the very low
+// opacity values (0.06, 0.12) still read properly.
+// ═════════════════════════════════════════════════════════════
+function makeMaterials() {
+  return {
+    // Frame + Clips — very transparent, glass-like, cool-white.
+    // Reflectivity-tuned: envMapIntensity bumped well above the original
+    // 1.6 for stronger env reflections (catching the procedural studio
+    // patches more like the silver parts do), and both roughnesses
+    // lowered for sharper mirror-like highlights instead of diffuse
+    // glows. Color/opacity/transmission/ior/thickness left unchanged so
+    // the glass-like appearance is preserved — only the strength and
+    // sharpness of reflections change.
+    acrylic: new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color(0.890, 0.933, 1.000),
+      transparent: true,
+      opacity: 0.12,
+      roughness: 0.02,
+      metalness: 0.0,
+      transmission: 0.85,
+      thickness: 0.35,
+      ior: 1.5,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.01,
+      envMapIntensity: 2.8,
+      side: THREE.DoubleSide
+    }),
+    // Cellophane — extremely transparent, warm-white
+    cello: new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color(1.000, 1.000, 0.955),
+      transparent: true,
+      opacity: 0.06,
+      roughness: 0.10,
+      metalness: 0.0,
+      transmission: 0.75,
+      thickness: 0.02,
+      ior: 1.47,
+      clearcoat: 0.6,
+      clearcoatRoughness: 0.08,
+      envMapIntensity: 1.3,
+      side: THREE.DoubleSide
+    }),
+    // Shaft collars — near-black polished.
+    // Metals are metalness=1.0 (fully reflective) so they're very sensitive to
+    // env map — low envMapIntensity lets the base color dominate, giving a
+    // stainless-steel read instead of a mirror-of-white that inverts to black.
+    shaftCollar: new THREE.MeshStandardMaterial({
+      color: new THREE.Color(0.0015, 0.0015, 0.0023),
+      roughness: 0.30,
+      metalness: 1.0,
+      envMapIntensity: 0.25
+    }),
+    // Bearings — bright polished steel
+    bearing: new THREE.MeshStandardMaterial({
+      color: new THREE.Color(0.604, 0.604, 0.638),
+      roughness: 0.15,
+      metalness: 1.0,
+      envMapIntensity: 0.25
+    }),
+    // Shaft+Coupler — mid-dark polished
+    shaft: new THREE.MeshStandardMaterial({
+      color: new THREE.Color(0.319, 0.319, 0.355),
+      roughness: 0.35,
+      metalness: 1.0,
+      envMapIntensity: 0.3
+    }),
+    // Silver — bright polished steel for plates, metal clips and springs.
+    // IMPORTANT pipeline note: for opaque metals here, three.js output
+    // ≈ baseColor (the env is mostly white, so reflection tint tracks
+    // baseColor). After `filter: invert(1)`, on-screen brightness is
+    // therefore ≈ 1 − baseColor. So a LOW base color renders as a
+    // BRIGHT metal on screen. This is why shaftCollar at 0.0015 reads
+    // near-white (not near-black as its comment suggests). Silver sits
+    // just above shaftCollar to keep a touch of chroma/shading rather
+    // than pure mirror-chrome, with low envMapIntensity so the base
+    // color continues to dominate over env reflections.
+    silver: new THREE.MeshStandardMaterial({
+      color: new THREE.Color(0.060, 0.060, 0.068),
+      roughness: 0.15,
+      metalness: 1.0,
+      envMapIntensity: 0.30
+    }),
+    // PLA (EED09) — solid opaque white, for the 3D-printed couplers.
+    //
+    // `side: DoubleSide` is crucial here: the coupler mesh in the GLB is
+    // exported as a single-sided shell (common with CAD → glTF exports),
+    // and with the default FrontSide culling, back-facing triangles drop
+    // out and the part reads as hollow — you see straight through to the
+    // acrylic frame behind. DoubleSide forces both faces to render, and
+    // because the material is opaque and writes depth, the result reads
+    // as a solid volume.
+    //
+    // Pure-white tuning: base color pushed very dark (0.02) so the CSS
+    // invert yields ~250/255 on screen. Clearcoat mostly killed — a
+    // bright clearcoat highlight renders bright in three.js and inverts
+    // to a *dark* streak on the "white" surface, which is what was
+    // making earlier passes read as dingy gray rather than clean white.
+    // Env intensity dialled down for the same reason.
+    pla: new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color(0.020, 0.020, 0.022),
+      transparent: false,
+      opacity: 1.0,
+      roughness: 0.55,
+      metalness: 0.0,
+      clearcoat: 0.05,
+      clearcoatRoughness: 0.40,
+      envMapIntensity: 0.30,
+      side: THREE.DoubleSide
+    }),
+    // Nylon spacers (EED09) — solid opaque cream plastic. Following the
+    // same invert logic as PLA: a dark base renders as a bright surface
+    // on screen. Nylon sits slightly warmer and slightly darker than PLA
+    // so the two plastics are visually distinguishable (PLA reads as
+    // pure white, nylon as natural cream). `side: DoubleSide` for the
+    // same reason as PLA: the spacers are exported as single-sided
+    // shells and would otherwise render as hollow in certain angles.
+    nylon: new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color(0.062, 0.060, 0.054),
+      transparent: false,
+      opacity: 1.0,
+      roughness: 0.60,
+      metalness: 0.0,
+      clearcoat: 0.10,
+      clearcoatRoughness: 0.35,
+      envMapIntensity: 0.5,
+      side: THREE.DoubleSide
+    })
+  };
+}
+
+// Apply the GLB-extracted materials to the real GLB nodes by name.
+// Handles both EED07's generic naming (Frame, Clips, Shaft_Collars, Cello, ...)
+// and EED09's material-prefixed naming (Acrylic_Frames, Metal_Clips_2,
+// Nylon_Spacers, Carbon_Fiber_Rods, 3D_Printed_Couplers, ...).
+//
+// Order matters: more-specific patterns come first.
+//   - "3D_Printed_Couplers" must hit PLA BEFORE the generic /Coupler/ test
+//   - "Metal_Clips_2" must hit silver BEFORE the generic /Clip/ test
+//   - "Shaft_Collar" must be caught BEFORE the generic /Shaft/ test
+//   - plates/clips/springs → silver; rods → shaft (dark) — kept separate
+//     so the carbon fibre rods stay black while the metals read bright.
+function applyGLBMaterials(root, M) {
+  root.traverse(obj => {
+    if (!obj.isMesh) return;
+    const name = obj.name || (obj.parent && obj.parent.name) || '';
+
+    if      (/Cello|Cellophane/i.test(name))                   obj.material = M.cello;       // EED07_Cello, EED07_Cellophane_Trimmed, EED09_Cellophane
+    else if (/Nylon/i.test(name))                              obj.material = M.nylon;       // EED09_Nylon_Spacers
+    else if (/Acrylic/i.test(name))                            obj.material = M.acrylic;     // EED09_Acrylic_Frames/Clips/Spacers
+    else if (/3D_Printed/i.test(name))                         obj.material = M.pla;         // EED09_3D_Printed_Couplers
+    else if (/Shaft_Collar/i.test(name))                       obj.material = M.shaftCollar; // EED07_Shaft_Collars
+    else if (/Bearing/i.test(name))                            obj.material = M.bearing;     // EED07_Bearings, EED09_Steel_Bearing_Assembly
+    else if (/Metal_Clip|Steel_Plate|Spring/i.test(name))      obj.material = M.silver;      // EED09 plates + metal clips, EED07 + EED09 springs
+    else if (/Carbon_Fiber|Rod/i.test(name))                   obj.material = M.shaft;       // EED09_Carbon_Fiber_Rods — stays dark
+    else if (/Frame|Clip/i.test(name))                         obj.material = M.acrylic;     // EED07_Frame, EED07_Clips (legacy generic match)
+    else if (/Shaft|Coupler/i.test(name))                      obj.material = M.shaft;       // EED07_Shaft+Coupler, EED07_Shaft_Elements
+    else                                                        obj.material = M.shaft;       // fallback
+  });
+}
+
+// ═════════════════════════════════════════════════════════════
+// PROCEDURAL WHEEL — used as preview / fallback
+// Uses the same materials so it matches the real engine's look
+// ═════════════════════════════════════════════════════════════
+function buildProceduralWheel(M) {
+  const g = new THREE.Group();
+
+  // Orient everything with the spin axis along Y (vertical)
+  // then we'll rotate the pivot so the wheel faces the camera nicely.
+
+  // Central shaft (long thin cylinder)
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.04, 0.04, 1.9, 32),
+    M.shaft
+  );
+  g.add(shaft);
+
+  // Two shaft collars
+  for (const y of [-0.55, 0.55]) {
+    const c = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.07, 0.07, 0.06, 32),
+      M.shaftCollar
+    );
+    c.position.y = y;
+    g.add(c);
+  }
+
+  // Two bearings (flanking the hub)
+  for (const y of [-0.22, 0.22]) {
+    const b = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.09, 0.09, 0.08, 32),
+      M.bearing
+    );
+    b.position.y = y;
+    g.add(b);
+  }
+
+  // Hub (wider short cylinder, acrylic — the frame's central part)
+  const hub = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.17, 0.17, 0.3, 48),
+    M.acrylic
+  );
+  g.add(hub);
+
+  // 8 radial spokes (acrylic) in the XZ plane
+  const nSpokes = 8;
+  const innerR = 0.17;
+  const outerR = 0.88;
+  const spokeLen = outerR - innerR;
+  for (let i = 0; i < nSpokes; i++) {
+    const angle = (i / nSpokes) * Math.PI * 2;
+    const sp = new THREE.Mesh(
+      new THREE.BoxGeometry(spokeLen, 0.05, 0.07),
+      M.acrylic
+    );
+    const midR = (innerR + outerR) / 2;
+    sp.position.set(Math.cos(angle) * midR, 0, Math.sin(angle) * midR);
+    sp.rotation.y = -angle;
+    g.add(sp);
+  }
+
+  // 8 cellophane "blade" panels between spokes (triangular)
+  const nBlades = 8;
+  const bladeShape = new THREE.Shape();
+  bladeShape.moveTo(-0.35, 0);
+  bladeShape.lineTo( 0.35, 0.22);
+  bladeShape.lineTo( 0.35,-0.22);
+  bladeShape.closePath();
+  const bladeGeo = new THREE.ShapeGeometry(bladeShape);
+
+  for (let i = 0; i < nBlades; i++) {
+    const angle = (i / nBlades) * Math.PI * 2 + Math.PI / nBlades;
+    const blade = new THREE.Mesh(bladeGeo, M.cello);
+    const r = 0.48;
+    blade.position.set(Math.cos(angle) * r, 0, Math.sin(angle) * r);
+    // orient: face tangentially (normal along tangent direction), then tilt slightly
+    blade.rotation.y = -angle + Math.PI / 2;
+    blade.rotation.x = Math.PI / 2;
+    blade.rotation.z = 0.35;  // pinwheel tilt
+    g.add(blade);
+  }
+
+  // Outer ring (acrylic torus in XZ plane)
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(outerR, 0.028, 14, 80),
+    M.acrylic
+  );
+  ring.rotation.x = Math.PI / 2;
+  g.add(ring);
+
+  return g;
+}
+
+// ═════════════════════════════════════════════════════════════
+// THREE.JS SETUP — follows main site pattern (dark scene + CSS invert)
+// ═════════════════════════════════════════════════════════════
+// Mobile detection — clamps pixel ratio on touch devices to reduce GPU load.
+// On a 2x-3x retina mobile display, running at full devicePixelRatio pushes
+// 2-4x the pixel count of desktop and is a common cause of stalls/hangs.
+const isMobile = window.matchMedia('(pointer: coarse)').matches;
+
+const canvas   = document.getElementById('canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.6;   // from main site
+renderer.outputEncoding = THREE.sRGBEncoding;
+
+const scene = new THREE.Scene();
+// Scene bg is the exact CSS-invert inverse of #e5e0da (the unified
+// nav/body/stage colour). 0x1a1f25 = (26, 31, 37); after filter:invert(1)
+// this reads back as (229, 224, 218) = #e5e0da on screen, so the canvas
+// blends seamlessly with the nav and stage chrome.
+scene.background = new THREE.Color(0x1a1f25);
+
+// Build a procedural studio environment.
+// Purpose: transparent PBR materials (acrylic frame, cellophane) read as
+// "invisible" against a flat dark bg because there's nothing for them to
+// reflect. A cheap cube-mapped env scene gives them reflections — and
+// because the canvas is CSS-inverted on the way out, BRIGHT reflections
+// invert to DARK highlights, so we get visible edge-tracing on the glass.
+const envScene = new THREE.Scene();
+envScene.background = new THREE.Color(0xffffff);
+// Three accent patches to create directional variation in the env
+const envPatches = [
+  { pos: [ 6,  4,  2], color: 0xffffff, size: 3.0 },
+  { pos: [-5,  2,  4], color: 0xc7d9ef, size: 2.5 },
+  { pos: [ 2, -4, -5], color: 0xffe4b8, size: 2.0 },
+  { pos: [-3, -3,  3], color: 0xb8cfe8, size: 1.8 },
+];
+envPatches.forEach(p => {
+  const m = new THREE.Mesh(
+    new THREE.SphereGeometry(p.size, 16, 12),
+    new THREE.MeshBasicMaterial({ color: p.color })
+  );
+  m.position.set(...p.pos);
+  envScene.add(m);
+});
+const pmremGen = new THREE.PMREMGenerator(renderer);
+pmremGen.compileEquirectangularShader();
+scene.environment = pmremGen.fromScene(envScene, 0.04).texture;
+pmremGen.dispose();
+
+const camera = new THREE.PerspectiveCamera(32, 1, 0.01, 100);
+// Axonometric view, tuned via the camera debug HUD: camera sits
+// slightly right of and below the wheel's plane, looking up and
+// forward. Shaft axis projects up and slightly to the right in screen
+// space. Values originated from an orbit session — Y dropped an extra
+// 0.3 to sit the wheel slightly higher in the frame.
+const DEFAULT_CAM    = new THREE.Vector3(0.544, -2.691, 1.452);
+const DEFAULT_TARGET = new THREE.Vector3(0, 0, 0);
+camera.position.copy(DEFAULT_CAM);
+camera.lookAt(DEFAULT_TARGET);
+
+// Lighting — mirrors index.html's main Three.js scene.
+// Colors and intensities match exactly; positions are scaled from the
+// main site's ~500-unit scene down to this scene's ~1.75-unit scale.
+// Direction vectors preserve the same lighting geometry.
+scene.add(new THREE.AmbientLight(0x889aac, 0.7));
+const d1 = new THREE.DirectionalLight(0xffffff, 1.0);  d1.position.set(5, 8, 5);         scene.add(d1);
+const d2 = new THREE.DirectionalLight(0x99bbdd, 0.5);  d2.position.set(-4, 3, -3);       scene.add(d2);
+const spec = new THREE.DirectionalLight(0xffffff, 0.6); spec.position.set(2, 6, 4);      scene.add(spec);
+// Rim lights for edge definition — boosted vs. main site because at full
+// viewport scale the acrylic edges need stronger grazing light to read.
+const rim1 = new THREE.DirectionalLight(0x5599cc, 0.9); rim1.position.set(0, -2, -5);    scene.add(rim1);
+const rim2 = new THREE.DirectionalLight(0x4488bb, 0.7); rim2.position.set(-5, 1, 2);     scene.add(rim2);
+const rim3 = new THREE.DirectionalLight(0x5588aa, 0.55); rim3.position.set(5, -1, 3);    scene.add(rim3);
+// Point lights for local highlights (distance scaled down with everything else)
+const pt1 = new THREE.PointLight(0xffffff, 0.4, 15);    pt1.position.set(1, 4, 2);       scene.add(pt1);
+const pt2 = new THREE.PointLight(0x88aacc, 0.3, 15);    pt2.position.set(-2, 3, -1);     scene.add(pt2);
+
+// Orbit controls
+const controls = new THREE.OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.enablePan     = false;
+controls.rotateSpeed   = 0.75;
+controls.zoomSpeed     = 0.75;
+controls.minDistance   = 1.6;
+controls.maxDistance   = 8.0;
+controls.target.copy(DEFAULT_TARGET);
+
+// Carousel group
+const STAGE_X = 5.2;
+const carouselGroup = new THREE.Group();
+scene.add(carouselGroup);
+
+// ═════════════════════════════════════════════════════════════
+// NORMALIZE + SLOT BUILDING
+// ═════════════════════════════════════════════════════════════
+function normalize(innerModel, pivot, target = 1.35) {
+  const box = new THREE.Box3().setFromObject(innerModel);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  innerModel.position.sub(center);
+  pivot.scale.setScalar(target / maxDim);
+}
+
+const M = makeMaterials();
+const slots = []; // { pivot, idx }
+
+function createSlot(i) {
+  const pivot = new THREE.Group();
+  // Start with procedural wheel — always visible, even without GLB
+  const wheel = buildProceduralWheel(M);
+  // Orient frame parallel to the viewport (shaft pointing toward camera).
+  // Procedural wheel was built with shaft along Y and frame in XZ plane;
+  // rotating +90° on X swings the shaft onto Z, so the frame is now in XY.
+  // The camera's off-center position gives a natural 3/4 view.
+  wheel.rotation.x = Math.PI / 2;
+  pivot.add(wheel);
+  normalize(wheel, pivot, 1.75);
+  pivot.position.x = i * STAGE_X;
+  carouselGroup.add(pivot);
+  slots.push({ pivot, idx: i, inner: wheel });
+  return pivot;
+}
+
+for (let i = 0; i < GENS.length; i++) createSlot(i);
+
+// GLB loading strategy
+// ────────────────────
+// LAZY: only the current slot loads at page open. Remaining slots cascade
+// in the background *after* reveal, one at a time. This keeps first-paint
+// fast on mobile and ensures we never saturate mobile bandwidth with
+// parallel multi-megabyte downloads (matters when EED08/09 ship with
+// their own GLB files and total payload grows to 8-10 MB).
+//
+// CACHED: every unique GLB path is fetched + parsed once. Slots sharing
+// a path (all three today, since they point at eed07.glb) reuse the
+// cached Promise.
+//
+// BULLETPROOFED: exceptions inside the success callback used to hang the
+// promise forever. Now wrapped in try/catch so the promise always settles,
+// and a 20s safety timer reveals the stage even if every load fails —
+// users never see an indefinite spinner.
+//
+// PROGRESS: when the server sends Content-Length, the loading label
+// updates with download percent so slow networks look "slow" instead of
+// "broken". Distinguishes the two main failure modes users might see.
+//
+// DRACO: forward-compatible. If you later serve Draco-compressed GLBs,
+// they'll just work — the decoder loads on demand.
+const loader = new THREE.GLTFLoader();
+const dracoLoader = new THREE.DRACOLoader();
+dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/draco/');
+loader.setDRACOLoader(dracoLoader);
+
+const gltfCache = new Map(); // path → Promise<gltf>
+const loadStartTime = performance.now();
+const MIN_LOAD_MS = 900;
+const LOADING_FADE_MS = 600;
+const SAFETY_REVEAL_MS = 20000;
+
+const loadingTextEl = document.getElementById('loadingText');
+function updateLoadingText(text) {
+  if (loadingTextEl) loadingTextEl.textContent = text;
+}
+
+function loadGLB(path) {
+  if (gltfCache.has(path)) return gltfCache.get(path);
+  const p = new Promise((resolve, reject) => {
+    loader.load(
+      path,
+      gltf => resolve(gltf),
+      evt => {
+        if (evt && evt.lengthComputable) {
+          const pct = Math.round((evt.loaded / evt.total) * 100);
+          // Only show progress while this is the first/current download
+          if (!document.getElementById('stage').classList.contains('loaded')) {
+            updateLoadingText(`Firing up the engines · ${pct}%`);
+          }
+        }
+      },
+      err => reject(err)
+    );
+  });
+  gltfCache.set(path, p);
+  return p;
+}
+
+function applyLoadedGLB(gltf, slotIdx) {
+  const slot = slots[slotIdx];
+  if (slot.loadedWithGLB) return;
+  try {
+    const real = gltf.scene.clone(true);
+    applyGLBMaterials(real, M);
+    real.rotation.x = Math.PI / 2;
+    slot.pivot.remove(slot.inner);
+    slot.pivot.scale.setScalar(1);
+    slot.pivot.add(real);
+    normalize(real, slot.pivot, 1.75);
+    slot.inner = real;
+    slot.loadedWithGLB = true;
+  } catch (e) {
+    console.error(`Failed to apply GLB to slot ${slotIdx}:`, e);
+    // Slot keeps its procedural fallback — user still sees something.
+  }
+}
+
+async function loadSlot(slotIdx) {
+  const gen = GENS[slotIdx];
+  if (!gen.glb) return;
+  try {
+    const gltf = await loadGLB(gen.glb);
+    applyLoadedGLB(gltf, slotIdx);
+  } catch (e) {
+    console.log(`GLB ${gen.glb} not available — slot ${slotIdx} using procedural preview.`);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Initial load: just the current slot. Reveal as soon as it's ready
+// (subject to MIN_LOAD_MS hold). Then cascade-load the rest in the
+// background so navigating to another slot later is instant.
+// Wrapped in a function and called at the end of the script so that
+// curIdx has been declared by the time we read it.
+// ──────────────────────────────────────────────────────────────────
+function startLoading() {
+  loadSlot(curIdx).then(() => {
+    const elapsed = performance.now() - loadStartTime;
+    const remaining = Math.max(0, MIN_LOAD_MS - elapsed);
+    setTimeout(() => {
+      revealStage();
+      // Cascade remaining slots sequentially (not in parallel) to be
+      // gentle on mobile bandwidth.
+      const others = GENS.map((_, i) => i).filter(i => i !== curIdx);
+      others.reduce((chain, i) => chain.then(() => loadSlot(i)), Promise.resolve());
+    }, remaining);
+  });
+
+  // Safety net: reveal regardless after SAFETY_REVEAL_MS so users never
+  // see an indefinite spinner. Falls back to whichever state the slots
+  // are in (loaded GLB, or procedural preview).
+  setTimeout(() => {
+    if (!document.getElementById('stage').classList.contains('loaded')) {
+      console.warn('Safety timeout — revealing with whatever content is ready.');
+      revealStage();
+    }
+  }, SAFETY_REVEAL_MS);
+
+  // Fallback: if no GLB paths at all, still reveal on schedule
+  if (!GENS.some(g => g.glb)) setTimeout(revealStage, MIN_LOAD_MS);
+}
+
+let safetyTimerCleared = false;
+function revealStage() {
+  if (safetyTimerCleared) return; // idempotent: safety + natural reveal can both fire
+  safetyTimerCleared = true;
+  document.getElementById('loading').classList.add('hide');
+  setTimeout(() => {
+    document.getElementById('stage').classList.add('loaded');
+  }, LOADING_FADE_MS);
+}
+
+// Hide loading after a brief moment (scene is already rendered)
+// Loading overlay is now hidden by revealStage() after GLB load + minimum hold
+
+// ═════════════════════════════════════════════════════════════
+// TRANSITIONS
+// ═════════════════════════════════════════════════════════════
+let curIdx = 0; // start with EED09
+let resetTimer = null;
+let switchTween = null, camTween = null;
+const easeInOutCubic = t => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
+
+function tweenCarouselTo(targetX, duration = 750) {
+  if (switchTween) switchTween.cancelled = true;
+  const token = { cancelled: false }; switchTween = token;
+  const startX = carouselGroup.position.x;
+  const t0 = performance.now();
+  (function step(){
+    if (token.cancelled) return;
+    const t = Math.min(1, (performance.now() - t0) / duration);
+    const e = easeInOutCubic(t);
+    carouselGroup.position.x = startX + (targetX - startX) * e;
+    if (t < 1) requestAnimationFrame(step);
+    else switchTween = null;
+  })();
+}
+function tweenCameraToDefault(duration = 750) {
+  if (camTween) camTween.cancelled = true;
+  const token = { cancelled: false }; camTween = token;
+  const startPos = camera.position.clone();
+  const startTgt = controls.target.clone();
+  const t0 = performance.now();
+  (function step(){
+    if (token.cancelled) return;
+    const t = Math.min(1, (performance.now() - t0) / duration);
+    const e = easeInOutCubic(t);
+    camera.position.lerpVectors(startPos, DEFAULT_CAM, e);
+    controls.target.lerpVectors(startTgt, DEFAULT_TARGET, e);
+    if (t < 1) requestAnimationFrame(step);
+    else camTween = null;
+  })();
+}
+
+// ═════════════════════════════════════════════════════════════
+// UI WIRING
+// ═════════════════════════════════════════════════════════════
+const stageCur   = document.getElementById('stageCur');
+const prevBtn    = document.getElementById('prev');
+const nextBtn    = document.getElementById('next');
+const chipEls    = document.querySelectorAll('.chip');
+
+function updateChrome(i) {
+  chipEls.forEach((c, j) => c.classList.toggle('on', j === i));
+  stageCur.textContent = String(i + 1).padStart(2, '0');
+  prevBtn.disabled = (i === 0);
+  nextBtn.disabled = (i === GENS.length - 1);
+}
+
+function switchTo(newIdx) {
+  if (newIdx === curIdx || newIdx < 0 || newIdx >= GENS.length) return;
+  clearTimeout(resetTimer);
+  curIdx = newIdx;
+
+  tweenCarouselTo(-newIdx * STAGE_X, 750);
+  tweenCameraToDefault(750);
+
+  updateChrome(curIdx);
+}
+
+updateChrome(curIdx);
+// Position carousel so initial selection is centered
+carouselGroup.position.x = -curIdx * STAGE_X;
+// Now that curIdx is set, initiate loading (lazy per-slot with cascade)
+startLoading();
+chipEls.forEach((c, i) => c.addEventListener('click', () => switchTo(i)));
+prevBtn.addEventListener('click', () => switchTo(curIdx - 1));
+nextBtn.addEventListener('click', () => switchTo(curIdx + 1));
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft')  switchTo(curIdx - 1);
+  if (e.key === 'ArrowRight') switchTo(curIdx + 1);
+});
+
+// Touch swipe (strict — only decisive horizontal motion)
+const stage = document.getElementById('stage');
+let tsX = null, tsY = null, tsT = 0;
+stage.addEventListener('touchstart', e => {
+  tsX = e.touches[0].clientX; tsY = e.touches[0].clientY; tsT = performance.now();
+}, { passive: true });
+stage.addEventListener('touchend', e => {
+  if (tsX === null) return;
+  const dx = e.changedTouches[0].clientX - tsX;
+  const dy = e.changedTouches[0].clientY - tsY;
+  const dt = performance.now() - tsT;
+  if (dt < 600 && Math.abs(dx) > 80 && Math.abs(dx) > 2 * Math.abs(dy)) {
+    switchTo(curIdx + (dx < 0 ? 1 : -1));
+  }
+  tsX = null;
+});
+
+// Idle snap-back — after 2.4s of no user interaction, the camera
+// tweens back to DEFAULT_CAM so the stage always returns to the
+// intended view.
+controls.addEventListener('start', () => {
+  clearTimeout(resetTimer);
+  if (camTween) camTween.cancelled = true;
+});
+controls.addEventListener('end', () => {
+  clearTimeout(resetTimer);
+  resetTimer = setTimeout(() => tweenCameraToDefault(800), 2400);
+});
+
+// ═════════════════════════════════════════════════════════════
+// LOOP + RESIZE
+// ═════════════════════════════════════════════════════════════
+function resize() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (w === 0 || h === 0) return;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+const ro = new ResizeObserver(resize);
+ro.observe(canvas);
+resize();
+
+// Slow continuous spin around each wheel's bearing-shaft axis.
+// After `inner.rotation.x = Math.PI/2` has been applied to the wheel
+// (in createSlot / applyLoadedGLB), the model's original Y axis — the
+// shaft — is aligned with world Z. In three.js XYZ Euler order the Y
+// rotation is applied intrinsically *before* the X rotation, which is
+// equivalent to rotating around the original shaft axis. So spinning
+// `inner.rotation.y` spins the wheel around its own shaft, exactly
+// what we want. dt is clamped to 0.1s so a backgrounded tab doesn't
+// snap-forward a huge rotation when it becomes active again.
+const SHAFT_SPIN_RATE = 0.06; // rad/sec (~1 revolution per 105s)
+let _lastLoopT = performance.now();
+(function loop(){
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - _lastLoopT) / 1000);
+  _lastLoopT = now;
+  for (const s of slots) {
+    if (s.inner) s.inner.rotation.y += SHAFT_SPIN_RATE * dt;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,42 @@
+[Unit]
+Description=Evapoflex rig server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=evapoflex
+Group=evapoflex
+WorkingDirectory=/opt/evapoflex/site/server
+ExecStart=/opt/evapoflex/venv/bin/python app.py
+Restart=always
+RestartSec=5
+
+# Read from /etc/evapoflex.env so credentials never live in this unit file
+# (which is world-readable and often ends up in a repo).
+EnvironmentFile=/etc/evapoflex.env
+
+# The rig is unattended; if it wedges, restarting beats staying down.
+WatchdogSec=0
+TimeoutStopSec=20
+
+# Least privilege. The process needs to read the site, write its data
+# directory, and talk to the network — nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/evapoflex
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+
+# matplotlib writes a font cache on first use; without a writable HOME it
+# fails at import time inside a hardened unit.
+Environment=MPLCONFIGDIR=/var/lib/evapoflex/.mplconfig
+
+[Install]
+WantedBy=multi-user.target

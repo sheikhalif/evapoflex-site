@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live Feed — Evapoflex</title>
+<link rel="icon" type="image/png" href="./assets/images/favicon.png">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Verdana,Geneva,sans-serif;color:#1a1e2a;background:#f5f4f0;
+     -webkit-font-smoothing:antialiased}
+.nz{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:0.035;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+
+/* Nav — matches index.html */
+.nv{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;
+    justify-content:space-between;padding:12px 48px;background:rgba(245,244,240,0.92);
+    backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+    border-bottom:1px solid rgba(45,124,181,0.12)}
+.nv-logo{display:flex;align-items:center;gap:8px;text-decoration:none;font-weight:600;
+         font-size:18px;color:#2d7cb5;letter-spacing:-0.02em}
+.nv-links{display:flex;gap:30px;align-items:center}
+.nv-link{font-size:12px;font-weight:500;letter-spacing:0.05em;text-transform:uppercase;
+         color:rgba(0,0,0,0.45);cursor:pointer;transition:color .3s;background:none;border:none;
+         font-family:inherit;text-decoration:none}
+.nv-link:hover,.nv-link.on{color:#2d7cb5}
+
+.wrap{position:relative;z-index:1;max-width:1180px;margin:0 auto;padding:112px 48px 90px}
+
+/* Header */
+.head{text-align:center;margin-bottom:40px}
+.kicker{display:inline-flex;align-items:center;gap:9px;padding:7px 16px;border-radius:60px;
+        font-size:10px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;
+        margin-bottom:22px;transition:all .4s}
+.kicker.live{background:rgba(34,197,94,0.12);color:#22c55e}
+.kicker.off{background:rgba(0,0,0,0.05);color:rgba(0,0,0,0.4)}
+.kicker .d{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.kicker.live .d{animation:beat 1.8s ease-in-out infinite}
+@keyframes beat{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.82)}}
+h1{font-size:40px;font-weight:300;line-height:1.12;letter-spacing:-0.015em;margin-bottom:14px}
+.lede{font-size:15px;font-weight:300;color:rgba(0,0,0,0.5);line-height:1.75;
+      max-width:530px;margin:0 auto}
+
+/* Video */
+.stage{position:relative;background:#0a0b0d;aspect-ratio:16/9;border-radius:16px;
+       overflow:hidden;margin-bottom:34px;box-shadow:0 20px 70px rgba(26,30,42,0.14)}
+#feed,#live{width:100%;height:100%;object-fit:contain;display:block}
+.veil{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+      justify-content:center;gap:10px;color:rgba(255,255,255,0.42);font-size:13.5px;
+      text-align:center;padding:28px;line-height:1.75}
+.veil b{display:block;color:rgba(255,255,255,0.72);font-size:16px;font-weight:400;
+        margin-bottom:2px}
+/* Current speed, over the video */
+.nowrpm{position:absolute;left:20px;bottom:18px;display:flex;align-items:baseline;gap:9px;
+        padding:11px 18px;border-radius:14px;background:rgba(0,0,0,0.42);
+        backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+        border:1px solid rgba(255,255,255,0.1);transition:opacity .4s}
+.nowrpm .v{font-size:29px;font-weight:300;color:#fff;font-variant-numeric:tabular-nums;
+           line-height:1}
+.nowrpm .u{font-size:10px;font-weight:600;letter-spacing:0.16em;text-transform:uppercase;
+           color:rgba(255,255,255,0.5)}
+
+/* Numbers */
+.figs{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;
+      background:rgba(45,124,181,0.11);border:1px solid rgba(45,124,181,0.11);
+      border-radius:14px;overflow:hidden;margin-bottom:34px}
+.fig{background:rgba(255,255,255,0.72);padding:24px 22px;text-align:center}
+.fig .k{font-size:9.5px;font-weight:600;letter-spacing:0.15em;text-transform:uppercase;
+        color:rgba(0,0,0,0.36);margin-bottom:10px}
+.fig .v{font-size:27px;font-weight:300;font-variant-numeric:tabular-nums;line-height:1.1}
+.fig .v small{font-size:12px;color:rgba(0,0,0,0.35);margin-left:3px;font-weight:400}
+.fig.lead .v{color:#2d7cb5;font-size:33px}
+
+/* Chart */
+.card{background:rgba(255,255,255,0.66);border:1px solid rgba(45,124,181,0.12);
+      border-radius:14px;overflow:hidden}
+.card-h{display:flex;align-items:baseline;justify-content:space-between;gap:14px;
+        padding:19px 24px 0}
+.card-t{font-size:13px;font-weight:600;letter-spacing:0.02em}
+.card-s{font-size:11.5px;color:rgba(0,0,0,0.42)}
+.card-b{padding:8px 12px 18px}
+#trend{width:100%;height:210px;display:block}
+
+.foot{margin-top:34px;text-align:center;font-size:11.5px;color:rgba(0,0,0,0.34);
+      line-height:1.9}
+.foot a{color:#2d7cb5;text-decoration:none}
+.foot a:hover{text-decoration:underline}
+
+@media(max-width:900px){
+  .wrap{padding:96px 22px 64px}
+  h1{font-size:30px}
+  .figs{grid-template-columns:repeat(2,1fr)}
+  .nv{padding:12px 22px}
+  .nv-links{gap:16px}
+  .fig{padding:20px 14px}
+  .fig .v{font-size:23px}
+  .fig.lead .v{font-size:27px}
+}
+@media(max-width:520px){
+  .nv-link:not(.on):not(#signin){display:none}
+  .nowrpm{left:12px;bottom:12px;padding:9px 14px}
+  .nowrpm .v{font-size:23px}
+}
+@media(prefers-reduced-motion:reduce){.kicker.live .d{animation:none}}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"
+        crossorigin="anonymous"></script>
+</head>
+<body>
+<div class="nz"></div>
+
+<nav class="nv">
+  <a class="nv-logo" href="./index.html">evapoflex</a>
+  <div class="nv-links">
+    <a class="nv-link on" href="./live.html">Live Feed</a>
+    <a class="nv-link" href="./index.html#how-it-works">How It Works</a>
+    <a class="nv-link" href="./archive.html">Models</a>
+    <a class="nv-link" href="./login.html?next=console.html" id="signin">Sign in</a>
+  </div>
+</nav>
+
+<div class="wrap">
+
+  <div class="head">
+    <div class="kicker off" id="kicker"><span class="d"></span><span id="kicker-t">Connecting</span></div>
+    <h1>The wheel, right now</h1>
+    <p class="lede">A prototype evaporation engine running in our lab. It turns
+       using nothing but moisture leaving the air.</p>
+  </div>
+
+  <div class="stage">
+    <!-- Two ways in. <video> is the SFU stream when one is configured; <img>
+         is the frame-by-frame fallback over our own WebSocket. Exactly one is
+         ever visible. -->
+    <video id="live" playsinline muted autoplay style="display:none"></video>
+    <img id="feed" alt="Live view of the evaporation engine">
+    <div class="veil" id="veil">
+      <b>The camera is offline</b>
+      <span>The wheel keeps turning — the view will return shortly.</span>
+    </div>
+    <div class="nowrpm" id="nowrpm" style="opacity:0">
+      <span class="v" id="rpm">—</span>
+      <span class="u">RPM</span>
+    </div>
+  </div>
+
+  <div class="figs">
+    <div class="fig lead">
+      <div class="k">Turning at</div>
+      <div class="v" id="f-rpm">—<small>rpm</small></div>
+    </div>
+    <div class="fig">
+      <div class="k">Rotations so far</div>
+      <div class="v" id="f-rev">—</div>
+    </div>
+    <div class="fig">
+      <div class="k">Running for</div>
+      <div class="v" id="f-up">—</div>
+    </div>
+    <div class="fig">
+      <div class="k">Typical test</div>
+      <div class="v" id="f-avg">—</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">
+      <div class="card-t">Speed over the last 3 hours</div>
+      <div class="card-s" id="trend-note">Gathering data…</div>
+    </div>
+    <div class="card-b"><canvas id="trend"></canvas></div>
+  </div>
+
+  <p class="foot">
+    Every reading on this page is measured from the video above, as it happens.<br>
+    <a href="./index.html#how-it-works">How the engine works</a>
+  </p>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let ws = null, retry = 0, history = [], haveFrame = false;
+// Once the SFU is carrying the video there is no reason for the server to
+// keep pushing JPEGs down the same socket — reconnect asking for stats only.
+let wantVideo = 1;
+let usingSfu = false;
+
+/* ---------------- live feed ----------------
+   Frames arrive on a WebSocket as JPEG blobs. This page is public and may sit
+   open on a screen for hours, so each object URL is revoked as it is replaced.
+   Without that, a day of frames is a slow memory leak in a tab nobody reloads. */
+function connect(){
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws/live?video=${wantVideo}`);
+  ws.binaryType = 'blob';
+
+  ws.onopen = () => { retry = 0; };
+
+  ws.onmessage = ev => {
+    if(typeof ev.data !== 'string'){
+      const img = $('feed');
+      const old = img.src;
+      img.src = URL.createObjectURL(ev.data);
+      if(old && old.startsWith('blob:')) URL.revokeObjectURL(old);
+      if(!haveFrame){ haveFrame = true; $('veil').style.display = 'none'; }
+      return;
+    }
+    const msg = JSON.parse(ev.data);
+    if(msg.type === 'stats') paintLive(msg);
+  };
+
+  ws.onclose = () => {
+    setLive(false);
+    // Back off, but never give up: this page is meant to be left open.
+    retry = Math.min(retry + 1, 6);
+    setTimeout(connect, 1000 * Math.pow(1.6, retry));
+  };
+  ws.onerror = () => { try{ ws.close(); }catch(e){} };
+}
+
+function setLive(on){
+  $('kicker').className = 'kicker ' + (on ? 'live' : 'off');
+  $('kicker-t').textContent = on ? 'Live now' : 'Offline';
+  $('nowrpm').style.opacity = on ? '1' : '0';
+  if(!on){
+    haveFrame = false;
+    // Don't cover the picture if the SFU is still delivering it — the tracking
+    // socket and the video are separate paths and either can drop alone.
+    if(!usingSfu) $('veil').style.display = '';
+    // A speed is a claim about right now. With the camera down we don't know
+    // what the wheel is doing, so the live figures blank rather than freeze on
+    // their last value — a stale number under an "Offline" badge reads as
+    // current. The 3-hour trend stays: that is history, and still true.
+    $('rpm').textContent   = '—';
+    $('f-rpm').innerHTML   = '—<small>rpm</small>';
+    $('f-rev').textContent = '—';
+    $('f-up').textContent  = '—';
+  }
+}
+
+const rpmText = v => (v == null || isNaN(v)) ? '—' : Number(v).toFixed(3);
+
+function paintLive(s){
+  setLive(!!(s.feed && s.feed.up));
+  const m = s.metrics || {};
+  $('rpm').textContent   = rpmText(m.current_rpm);
+  $('f-rpm').innerHTML   = `${rpmText(m.current_rpm)}<small>rpm</small>`;
+  $('f-rev').textContent = m.revolutions == null ? '—' : Number(m.revolutions).toFixed(1);
+  $('f-up').textContent  = m.runtime || '—';
+}
+
+/* ---------------- three-hour trend ----------------
+   Polled rather than pushed: it changes once a minute, and a public page
+   should not hold a second socket open for something that slow. */
+async function loadOverview(){
+  try{
+    const r = await fetch('/api/live/overview', {credentials:'same-origin'});
+    if(!r.ok) return;
+    const d = await r.json();
+    history = d.history || [];
+    if(d.totals) $('f-avg').textContent = d.totals.average_runtime || '—';
+    drawTrend();
+  }catch(e){ /* offline: keep the last good picture on screen */ }
+}
+
+function drawTrend(){
+  const c = $('trend'), dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = 210;
+  if(c.width !== Math.round(w*dpr) || c.height !== Math.round(h*dpr)){
+    c.width = Math.round(w*dpr); c.height = Math.round(h*dpr);
+    c.style.height = h + 'px';
+  }
+  const g = c.getContext('2d');
+  g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,w,h);
+
+  const pts = history.filter(p => p.rpm != null);
+  if(pts.length < 2){
+    $('trend-note').textContent = 'Gathering data…';
+    g.fillStyle = 'rgba(0,0,0,0.22)';
+    g.font = '12px Verdana'; g.textAlign = 'center';
+    g.fillText('The trend appears once the wheel has been watched a few minutes.',
+               w/2, h/2);
+    return;
+  }
+
+  const pad = {l:46, r:16, t:16, b:26};
+  const now = Date.now()/1000, span = 3*60*60;
+  // Fixed 3-hour window rather than scaling to the data: the axis then means
+  // the same thing every time you look, and a gap in the feed reads as a gap.
+  const x = t => pad.l + ((t - (now - span)) / span) * (w - pad.l - pad.r);
+  const vals = pts.map(p => p.rpm);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if(hi - lo < 0.05){ const mid = (hi+lo)/2; lo = mid-0.025; hi = mid+0.025; }
+  const padv = (hi - lo) * 0.15;
+  lo = Math.max(0, lo - padv); hi = hi + padv;
+  const y = v => pad.t + (1 - (v - lo)/(hi - lo)) * (h - pad.t - pad.b);
+
+  g.strokeStyle = 'rgba(45,124,181,0.10)'; g.lineWidth = 1;
+  g.fillStyle = 'rgba(0,0,0,0.32)'; g.font = '10px Verdana'; g.textAlign = 'right';
+  for(let i=0;i<=3;i++){
+    const v = lo + (hi-lo)*i/3, yy = Math.round(y(v)) + 0.5;
+    g.beginPath(); g.moveTo(pad.l, yy); g.lineTo(w-pad.r, yy); g.stroke();
+    g.fillText(v.toFixed(2), pad.l-9, yy+3.5);
+  }
+  g.textAlign = 'center';
+  for(let hh=3; hh>=0; hh--){
+    g.fillText(hh === 0 ? 'now' : `-${hh}h`, x(now - hh*3600), h-8);
+  }
+
+  // Split into runs of consecutive samples. Drawing straight through a gap
+  // would invent a reading for time the camera was down — the line has to
+  // break so missing minutes look missing.
+  const GAP_S = 200;   // samples are a minute apart; >3 min means a real gap
+  const runs = [];
+  let cur = [pts[0]];
+  for(let i=1;i<pts.length;i++){
+    if(pts[i].t - pts[i-1].t > GAP_S){ runs.push(cur); cur = []; }
+    cur.push(pts[i]);
+  }
+  runs.push(cur);
+
+  const grad = g.createLinearGradient(0, pad.t, 0, h-pad.b);
+  grad.addColorStop(0, 'rgba(45,124,181,0.20)');
+  grad.addColorStop(1, 'rgba(45,124,181,0.01)');
+
+  for(const run of runs){
+    if(run.length < 2) continue;
+    g.beginPath();
+    run.forEach((p,i) => i ? g.lineTo(x(p.t), y(p.rpm)) : g.moveTo(x(p.t), y(p.rpm)));
+    g.lineTo(x(run[run.length-1].t), h-pad.b);
+    g.lineTo(x(run[0].t), h-pad.b);
+    g.closePath(); g.fillStyle = grad; g.fill();
+
+    g.beginPath();
+    run.forEach((p,i) => i ? g.lineTo(x(p.t), y(p.rpm)) : g.moveTo(x(p.t), y(p.rpm)));
+    g.strokeStyle = '#2d7cb5'; g.lineWidth = 2;
+    g.lineJoin = 'round'; g.lineCap = 'round'; g.stroke();
+  }
+
+  const last = pts[pts.length-1];
+  g.beginPath(); g.arc(x(last.t), y(last.rpm), 3.5, 0, Math.PI*2);
+  g.fillStyle = '#2d7cb5'; g.fill();
+  g.strokeStyle = '#f5f4f0'; g.lineWidth = 2; g.stroke();
+
+  const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+  $('trend-note').textContent = `Averaging ${avg.toFixed(3)} RPM`;
+}
+
+/* ---------------- video ----------------
+   Preferred path is the SFU: the phone publishes H.264 there and we subscribe,
+   so the video never crosses our server and every viewer costs it nothing.
+   Falling back to frames over the WebSocket keeps the page working before the
+   SFU is configured, and if it becomes unreachable. */
+async function startVideo(){
+  let cfg;
+  try{ cfg = await (await fetch('/api/stream/config')).json(); }
+  catch(e){ return false; }
+  if(!cfg.enabled || !window.LivekitClient) return false;
+
+  try{
+    const t = await (await fetch('/api/stream/token',
+      {method:'POST', credentials:'same-origin'})).json();
+    const room = new LivekitClient.Room({
+      adaptiveStream: true,   // drop to a smaller layer on a slow connection
+      dynacast: true,
+    });
+    room.on(LivekitClient.RoomEvent.TrackSubscribed, track => {
+      if(track.kind !== 'video') return;
+      const v = $('live');
+      track.attach(v);
+      v.style.display = '';
+      $('feed').style.display = 'none';
+      $('veil').style.display = 'none';
+      haveFrame = true;
+      usingSfu = true;
+      if(wantVideo){                 // stop the duplicate JPEG stream
+        wantVideo = 0;
+        try{ ws.close(); }catch(e){}  // onclose reconnects with video=0
+      }
+    });
+    room.on(LivekitClient.RoomEvent.TrackUnsubscribed, () => {
+      $('live').style.display = 'none';
+      $('feed').style.display = '';
+      haveFrame = false;
+      usingSfu = false;
+      $('veil').style.display = '';
+      if(!wantVideo){                // no SFU video: ask for frames again
+        wantVideo = 1;
+        try{ ws.close(); }catch(e){}
+      }
+    });
+    await room.connect(t.url, t.token);
+    return true;
+  }catch(e){ return false; }
+}
+
+connect();                 // always: this carries the stats, not just frames
+startVideo();
+loadOverview();
+setInterval(loadOverview, 60000);
+window.addEventListener('resize', drawTrend);
+</script>
+</body>
+</html>

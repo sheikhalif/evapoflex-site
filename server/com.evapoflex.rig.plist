@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent for the Evapoflex rig server.
+
+  Install:
+      cp server/com.evapoflex.rig.plist ~/Library/LaunchAgents/
+      launchctl load  ~/Library/LaunchAgents/com.evapoflex.rig.plist
+
+  Stop / uninstall:
+      launchctl unload ~/Library/LaunchAgents/com.evapoflex.rig.plist
+
+  Logs:
+      tail -f ~/Library/Logs/evapoflex-rig.log
+
+  Wrapped in `caffeinate -s` so the Mac does not idle-sleep while the rig is
+  recording. That covers a lid-open machine on mains power; it does not
+  override a shutdown, and on battery macOS will still sleep eventually.
+
+  KeepAlive restarts the server if it exits for any reason. A run interrupted
+  that way is rebuilt from the samples already flushed to SQLite, so a crash
+  costs seconds rather than the run.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.evapoflex.rig</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-s</string>
+        <!-- The python.org 3.13 build, NOT /usr/bin/python3. launchd starts
+             with a bare environment and no PATH resolution, and Apple's system
+             python has none of the dependencies installed. -->
+        <string>/Library/Frameworks/Python.framework/Versions/3.13/bin/python3</string>
+        <string>/Users/sheikh.a/Documents/evapoflex-site/server/app.py</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PORT</key>
+        <string>8099</string>
+        <!-- Deliberately outside ~/Documents: that folder is iCloud-synced on
+             this machine, and handing a live SQLite database to a sync daemon
+             risks corruption and stalled reads. -->
+        <key>EVAPOFLEX_DATA</key>
+        <string>/Users/sheikh.a/Library/Application Support/evapoflex-rig</string>
+        <key>EVAPOFLEX_TOOLS</key>
+        <string>/Users/sheikh.a/Documents/Evapoflex Tools</string>
+        <key>EVAPOFLEX_HTTPS</key>
+        <string>1</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/sheikh.a/Documents/evapoflex-site</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Do not hammer the machine if it is failing to start at all. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/sheikh.a/Library/Logs/evapoflex-rig.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sheikh.a/Library/Logs/evapoflex-rig.log</string>
+</dict>
+</plist>

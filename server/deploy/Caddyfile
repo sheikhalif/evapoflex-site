@@ -1,0 +1,24 @@
+# Caddy fetches and renews a Let's Encrypt certificate automatically. That
+# certificate is not a nicety: Safari refuses camera access to any origin that
+# is not a secure context, so without HTTPS the phone cannot publish at all.
+
+rig.evaporationengine.net {
+	encode zstd gzip
+
+	# WebSockets need no special directive — reverse_proxy upgrades them — but
+	# the phone and every dashboard hold connections open for hours, so the
+	# read timeout has to be long enough not to cut a healthy idle socket.
+	reverse_proxy localhost:8099 {
+		transport http {
+			read_timeout 24h
+			write_timeout 24h
+		}
+	}
+
+	log {
+		output file /var/log/caddy/rig.log {
+			roll_size 20mb
+			roll_keep 5
+		}
+	}
+}

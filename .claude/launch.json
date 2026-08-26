@@ -1,0 +1,8 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "rig-preview", "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m","http.server","0","--directory","."], "port": 8123,
+      "autoPort": true }
+  ]
+}

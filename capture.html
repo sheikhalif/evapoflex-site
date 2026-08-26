@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Evapoflex Rig">
+<title>Rig Camera — Evapoflex</title>
+<link rel="icon" type="image/png" href="./assets/images/favicon.png">
+<link rel="apple-touch-icon" href="./assets/images/favicon.png">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{font-family:Verdana,Geneva,sans-serif;background:#0a0b0d;color:#e5e0da;overflow:hidden;
+     height:100vh;height:100dvh;-webkit-font-smoothing:antialiased;overscroll-behavior:none}
+button{font-family:inherit;cursor:pointer;border:none}
+
+/* ---------- Dedicated camera login ---------- */
+#gate{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;
+      justify-content:center;padding:32px 26px;background:#0a0b0d;gap:0}
+#gate .logo{font-size:20px;font-weight:600;color:#4a9fd4;letter-spacing:-0.02em;margin-bottom:6px}
+#gate .kicker{font-size:9px;font-weight:600;letter-spacing:0.22em;text-transform:uppercase;
+              color:rgba(255,255,255,0.3);margin-bottom:30px}
+#gate h1{font-size:20px;font-weight:400;margin-bottom:8px;text-align:center}
+#gate .hint{font-size:12px;color:rgba(255,255,255,0.4);line-height:1.6;text-align:center;
+            max-width:300px;margin-bottom:26px}
+.field{width:100%;max-width:320px;margin-bottom:12px}
+.field label{display:block;font-size:9px;font-weight:600;letter-spacing:0.15em;text-transform:uppercase;
+             color:rgba(255,255,255,0.35);margin-bottom:7px}
+.field input{width:100%;padding:14px 15px;font-size:16px;font-family:inherit;color:#e5e0da;
+             background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);
+             border-radius:10px;outline:none;transition:border-color .2s}
+.field input:focus{border-color:#4a9fd4}
+.btn{width:100%;max-width:320px;padding:15px;font-size:12px;font-weight:600;letter-spacing:0.08em;
+     text-transform:uppercase;background:#2d7cb5;color:#fff;border-radius:10px;transition:opacity .2s}
+.btn:active{opacity:.7}
+.btn[disabled]{opacity:.4}
+.btn-ghost{background:transparent;border:1px solid rgba(255,255,255,0.18);color:rgba(255,255,255,0.75)}
+.btn-danger{background:#ef4444}
+.err{font-size:12px;color:#ef4444;margin-top:14px;text-align:center;min-height:16px;max-width:320px}
+
+/* ---------- Camera stage ---------- */
+#stage{position:fixed;inset:0;display:none;flex-direction:column}
+#viewport{position:relative;flex:1;overflow:hidden;background:#000}
+#video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+#overlay{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
+
+.topbar{position:absolute;top:0;left:0;right:0;z-index:10;display:flex;align-items:center;gap:10px;
+        padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;
+        background:linear-gradient(180deg,rgba(0,0,0,.75),transparent)}
+.dot{width:8px;height:8px;border-radius:50%;background:#666;flex-shrink:0}
+.dot.on{background:#22c55e;box-shadow:0 0 8px rgba(34,197,94,.8)}
+.dot.warn{background:#c2410c}
+.dot.off{background:#ef4444}
+.topbar .status{font-size:11px;color:rgba(255,255,255,.85);flex:1;line-height:1.35}
+.topbar .status b{font-weight:600}
+.icon-btn{width:34px;height:34px;border-radius:9px;background:rgba(255,255,255,.12);color:#fff;
+          font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+
+.readout{position:absolute;left:14px;bottom:14px;z-index:10;display:flex;gap:8px;flex-wrap:wrap;
+         max-width:calc(100% - 28px)}
+.chip{background:rgba(0,0,0,.6);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+      border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:6px 10px;min-width:62px}
+.chip .k{font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.45)}
+.chip .v{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:1px}
+
+/* ---------- Control drawer ---------- */
+.drawer{background:#0a0b0d;border-top:1px solid rgba(255,255,255,.08);
+        padding:12px 14px calc(env(safe-area-inset-bottom) + 12px);max-height:52vh;overflow-y:auto}
+.row{display:flex;gap:8px;margin-bottom:8px}
+.row .btn{flex:1;padding:13px 8px;font-size:11px;max-width:none}
+.seg{display:flex;gap:6px;margin-bottom:10px}
+.seg button{flex:1;padding:9px 4px;font-size:10px;font-weight:600;letter-spacing:.05em;
+            text-transform:uppercase;background:rgba(255,255,255,.06);color:rgba(255,255,255,.55);
+            border-radius:8px;transition:all .2s}
+.seg button.sel{background:#2d7cb5;color:#fff}
+.panel{display:none;padding-top:4px}
+.panel.open{display:block}
+.ctl{margin-bottom:11px}
+.ctl label{display:flex;justify-content:space-between;font-size:10px;letter-spacing:.08em;
+           text-transform:uppercase;color:rgba(255,255,255,.4);margin-bottom:6px}
+.ctl label span{color:#4a9fd4;font-variant-numeric:tabular-nums;letter-spacing:0}
+.ctl input[type=range]{width:100%;accent-color:#2d7cb5}
+.ctl input[type=text],.ctl select{width:100%;padding:11px;font-size:15px;font-family:inherit;
+    color:#e5e0da;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);
+    border-radius:8px;outline:none}
+.note{font-size:10px;color:rgba(255,255,255,.35);line-height:1.55;margin:6px 0 10px}
+.bufbar{height:4px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden;margin:2px 0 6px}
+.buffill{height:100%;width:0;background:#2d7cb5;border-radius:2px;transition:width .4s,background .4s}
+.bufinfo{display:flex;justify-content:space-between;gap:10px;font-size:10px;
+         color:rgba(255,255,255,.45);margin-bottom:10px}
+.bufinfo b{color:rgba(255,255,255,.8)}
+.toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 20px);transform:translateX(-50%);
+       background:rgba(10,11,13,.96);border:1px solid rgba(255,255,255,.14);border-radius:10px;
+       padding:11px 18px;font-size:12px;z-index:300;opacity:0;transition:opacity .25s;
+       pointer-events:none;max-width:88vw;text-align:center}
+.toast.show{opacity:1}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"
+        crossorigin="anonymous"></script>
+</head>
+<body>
+
+<!-- ============ Dedicated camera login ============ -->
+<div id="gate">
+  <div class="logo">evapoflex</div>
+  <div class="kicker">Rig Camera</div>
+  <h1>Sign in this device</h1>
+  <p class="hint">Use the <b>camera account</b> for the phone mounted at the rig — not your personal login.</p>
+  <div class="field">
+    <label for="u">Camera account</label>
+    <input id="u" type="text" autocapitalize="none" autocorrect="off" autocomplete="username" placeholder="rig-camera">
+  </div>
+  <div class="field">
+    <label for="p">Password</label>
+    <input id="p" type="password" autocomplete="current-password" placeholder="••••••••">
+  </div>
+  <button class="btn" id="signin">Sign in</button>
+  <div class="err" id="gate-err"></div>
+</div>
+
+<!-- ============ Camera stage ============ -->
+<div id="stage">
+  <div id="viewport">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+
+    <div class="topbar">
+      <div class="dot" id="dot"></div>
+      <div class="status" id="status">Idle</div>
+      <button class="icon-btn" id="torch" title="Torch">☀</button>
+      <button class="icon-btn" id="signout" title="Sign out">⏻</button>
+    </div>
+
+    <div id="nofeed-help" style="display:none;position:absolute;inset:0;z-index:12;
+         align-items:center;justify-content:center;padding:26px;
+         background:rgba(10,11,13,.94);text-align:center">
+      <div>
+        <div style="font-size:15px;margin-bottom:12px">Camera needs a secure connection</div>
+        <div style="font-size:12px;color:rgba(255,255,255,.5);line-height:1.7">
+          Safari only allows camera access over <b>https://</b> (or on localhost).
+          Reach this page through the HTTPS tunnel rather than a plain
+          <b>http://</b> address on the local network.
+        </div>
+      </div>
+    </div>
+
+    <div class="readout">
+      <div class="chip"><div class="k">RPM</div><div class="v" id="r-rpm">—</div></div>
+      <div class="chip"><div class="k">Revs</div><div class="v" id="r-rev">—</div></div>
+      <div class="chip"><div class="k">Lock</div><div class="v" id="r-lock">—</div></div>
+      <div class="chip"><div class="k">FPS</div><div class="v" id="r-fps">—</div></div>
+      <div class="chip"><div class="k">Latency</div><div class="v" id="r-lat">—</div></div>
+    </div>
+  </div>
+
+  <div class="drawer">
+    <div class="row">
+      <button class="btn" id="stream-btn">Start streaming</button>
+      <button class="btn btn-ghost" id="run-btn">Record run</button>
+    </div>
+    <div class="row" id="pause-row" style="display:none">
+      <button class="btn btn-ghost" id="pause-btn">Pause for maintenance</button>
+    </div>
+
+    <div id="buf-row" style="display:none">
+      <div class="bufbar"><div class="buffill" id="buf-fill"></div></div>
+      <div class="bufinfo">
+        <span>Saved on phone: <b id="buf-count">0</b> · <b id="buf-size">0 MB</b>
+          · <b id="buf-left">—</b></span>
+        <span id="buf-drop-wrap">dropped <b id="buf-dropped">0</b></span>
+      </div>
+    </div>
+
+    <div class="seg">
+      <button data-panel="aim" class="sel">Aim</button>
+      <button data-panel="color">Marker</button>
+      <button data-panel="feed">Feed</button>
+    </div>
+
+    <!-- Aim: wheel geometry -->
+    <div class="panel open" id="p-aim">
+      <p class="note">Drag on the video to move the ring centre; pinch to resize it. The ring must sit on the
+        path the marker travels. Or let the wheel turn a quarter revolution and tap Auto-fit.</p>
+      <div class="ctl">
+        <label>Ring radius <span id="v-rad">0.35</span></label>
+        <input type="range" id="s-rad" min="0.05" max="0.7" step="0.005" value="0.35">
+      </div>
+      <div class="ctl">
+        <label>Ring tolerance <span id="v-band">10%</span></label>
+        <input type="range" id="s-band" min="0.02" max="0.4" step="0.01" value="0.10">
+      </div>
+      <button class="btn btn-ghost" id="autofit">Auto-fit ring from motion</button>
+    </div>
+
+    <!-- Marker colour -->
+    <div class="panel" id="p-color">
+      <p class="note">Tap the marker on the video to sample its colour. Widen the hue range only if the
+        lock keeps dropping as the light changes.</p>
+      <div class="ctl">
+        <label>Hue width <span id="v-hue">±12</span></label>
+        <input type="range" id="s-hue" min="4" max="40" step="1" value="12">
+      </div>
+      <div class="ctl">
+        <label>Min blob size <span id="v-amin">0.025%</span></label>
+        <input type="range" id="s-amin" min="0.00002" max="0.003" step="0.00002" value="0.00025">
+      </div>
+      <button class="btn btn-ghost" id="tapmode">Tap video to sample colour</button>
+    </div>
+
+    <!-- Feed settings -->
+    <div class="panel" id="p-feed">
+      <div class="ctl">
+        <label>Send rate <span id="v-fps">8 fps</span></label>
+        <input type="range" id="s-fps" min="1" max="15" step="1" value="8">
+      </div>
+      <div class="ctl">
+        <label>Offline rate <span id="v-offline-fps">0.5 fps</span></label>
+        <input type="range" id="s-offline-fps" min="0.2" max="4" step="0.1" value="0.5">
+      </div>
+      <p class="note">If the connection or the server goes away, capture continues at the offline
+        rate into storage on this phone, then replays automatically when it returns. Offline frames
+        are saved small — enough to track the tape, not to watch — so about <b>13 hours</b> of
+        outage fits at 0.5&nbsp;fps before the oldest are dropped. A slower rate buys more time; the
+        wheel turns far too slowly for it to cost any accuracy.</p>
+      <div class="ctl">
+        <label>Frame width <span id="v-w">960 px</span></label>
+        <input type="range" id="s-w" min="480" max="1440" step="80" value="960">
+      </div>
+      <div class="ctl">
+        <label>JPEG quality <span id="v-q">70%</span></label>
+        <input type="range" id="s-q" min="30" max="92" step="2" value="70">
+      </div>
+      <div class="ctl">
+        <label for="design">Design code</label>
+        <input type="text" id="design" value="EED01M" autocapitalize="characters">
+      </div>
+      <p class="note">Keep the phone plugged in. The screen is held awake while streaming, but iOS still
+        pauses capture if you switch apps or lock the screen — leave this page in the foreground.</p>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+// Tracking-only rate once the SFU carries the video. A 0.8 RPM wheel turns
+// 2.4 degrees between frames at 2fps — far finer than the tracker needs.
+const TRACKING_FPS = 2;
+const state = {
+  room: null,          // LiveKit room while publishing
+  ws:null, stream:null, track:null, streaming:false, recording:false,
+  wakeLock:null, tapSample:false, cal:null, sendTimer:null, t0:0,
+  frames:0, lastAck:{}, torchOn:false, reconnectDelay:1000,
+  paused:false, backfilling:false,
+  bufferCount:0, bufferBytes:0, dropped:0,
+};
+
+/* ---------------- toast ---------------- */
+let toastTimer;
+function toast(msg){
+  const t=$('toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),2600);
+}
+
+/* ---------------- auth ---------------- */
+async function api(path, opts={}){
+  const r = await fetch(path, {credentials:'same-origin',
+    headers:{'Content-Type':'application/json'}, ...opts});
+  if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
+  return r.json();
+}
+
+async function checkAuth(){
+  try{
+    const me = await api('/api/auth/me');
+    if(!me.permissions.includes('stream')){
+      $('gate-err').textContent = `'${me.username}' cannot stream. Sign in with a camera or operator account.`;
+      return false;
+    }
+    enterStage(me);
+    return true;
+  }catch{ return false; }
+}
+
+$('signin').onclick = async () => {
+  const btn=$('signin'); btn.disabled=true; $('gate-err').textContent='';
+  try{
+    const res = await api('/api/auth/login', {method:'POST',
+      body: JSON.stringify({username:$('u').value, password:$('p').value})});
+    if(!res.user.permissions.includes('stream')){
+      $('gate-err').textContent = 'That account is not allowed to stream.';
+      await api('/api/auth/logout',{method:'POST'});
+    } else enterStage(res.user);
+  }catch(e){ $('gate-err').textContent = e.message; }
+  btn.disabled=false;
+};
+$('p').addEventListener('keydown', e => { if(e.key==='Enter') $('signin').click(); });
+
+$('signout').onclick = async () => {
+  if(state.streaming) stopStreaming();
+  await api('/api/auth/logout',{method:'POST'}).catch(()=>{});
+  location.reload();
+};
+
+async function enterStage(me){
+  $('gate').style.display='none';
+  $('stage').style.display='flex';
+  setStatus('warn', `Signed in as <b>${me.username}</b> · camera idle`);
+  try{
+    idb = await openDB();
+    await recountBuffer();
+    if(state.bufferCount){
+      // Frames survived a reload or a force-quit; they go back as soon as we
+      // are streaming again.
+      toast(`${state.bufferCount} frames waiting from an earlier outage`);
+    }
+  }catch(e){ toast('Offline buffering unavailable: ' + e.message); }
+  initCamera();
+}
+
+/* ---------------- camera ---------------- */
+async function initCamera(){
+  // Browsers only expose the camera in a secure context. localhost counts;
+  // a plain-http LAN address does not, and Safari reports that as a missing
+  // mediaDevices rather than a permission error - which sends you hunting
+  // through Settings for a permission that was never the problem.
+  if(!window.isSecureContext || !navigator.mediaDevices){
+    setStatus('off','Camera needs HTTPS');
+    $('nofeed-help').style.display = 'flex';
+    return;
+  }
+  try{
+    state.stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:'environment', width:{ideal:1920}, height:{ideal:1080} },
+      audio:false
+    });
+  }catch(e){
+    if(e.name === 'NotAllowedError'){
+      setStatus('off','Camera blocked — allow camera access for this site');
+      toast('Camera permission denied');
+    } else {
+      setStatus('off', `Camera unavailable — ${e.name}`);
+      toast(e.message || String(e));
+    }
+    return;
+  }
+  const v=$('video'); v.srcObject=state.stream; await v.play().catch(()=>{});
+  state.track = state.stream.getVideoTracks()[0];
+  setStatus('warn','Camera ready — press Start streaming');
+  requestAnimationFrame(drawOverlay);
+}
+
+$('torch').onclick = async () => {
+  if(!state.track) return;
+  const caps = state.track.getCapabilities ? state.track.getCapabilities() : {};
+  if(!caps.torch){ toast('This camera has no controllable torch'); return; }
+  state.torchOn = !state.torchOn;
+  try{ await state.track.applyConstraints({advanced:[{torch:state.torchOn}]}); }
+  catch{ toast('Torch unavailable while streaming'); }
+};
+
+/* ---------------- wake lock ---------------- */
+async function acquireWakeLock(){
+  try{
+    if('wakeLock' in navigator){
+      state.wakeLock = await navigator.wakeLock.request('screen');
+      state.wakeLock.addEventListener('release', ()=>{ state.wakeLock=null; });
+    }
+  }catch{}
+}
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState==='visible' && state.streaming && !state.wakeLock) acquireWakeLock();
+});
+
+/* ---------------- websocket ---------------- */
+function connect(){
+  const proto = location.protocol==='https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws/ingest`);
+  ws.binaryType='arraybuffer';
+  state.ws = ws;
+
+  ws.onopen = async () => {
+    state.reconnectDelay = 1000;
+    setStatus('on','Streaming — waiting for lock');
+    startSendLoop();               // capture at the live rate again
+    await drainBuffer();           // then hand back whatever the outage cost
+  };
+  ws.onmessage = ev => {
+    let m; try{ m=JSON.parse(ev.data); }catch{ return; }
+    if(m.type==='hello'){ applyCalibration(m.calibration); }
+    else if(m.type==='calibration'){ applyCalibration(m.calibration); }
+    else if(m.type==='ack'){
+      state.lastAck=m; state.lastAckAt=Date.now();
+      if(m.echo != null){
+        // Round trip measured entirely on this device's clock, so it needs no
+        // agreement with the server about what time it is.
+        const rtt = performance.now() - m.echo;
+        state.latency = state.latency==null ? rtt : state.latency*0.7 + rtt*0.3;
+        $('r-lat').textContent = Math.round(state.latency) + 'ms';
+        $('r-lat').style.color = state.latency > 1500 ? '#ef4444'
+                               : (state.latency > 600 ? '#c2410c' : '');
+        if(Date.now() - (state.latSent||0) > 4000){
+          state.latSent = Date.now();
+          if(online()) state.ws.send(JSON.stringify(
+            {type:'latency', ms: Math.round(state.latency)}));
+        }
+      }
+      $('r-rpm').textContent  = m.rpm==null ? '—' : m.rpm.toFixed(3);
+      $('r-rev').textContent  = (m.revolutions ?? 0).toFixed(2);
+      $('r-lock').textContent = (m.lock_quality ?? 0).toFixed(0)+'%';
+      $('r-fps').textContent  = (m.fps||0).toFixed(1);
+      // The server is the authority on whether a run is recording: another
+      // operator can stop it from the dashboard while the phone is streaming.
+      if(m.recording !== state.recording || m.paused !== state.paused){
+        state.recording = m.recording; state.paused = !!m.paused; syncButtons();
+      }
+      if(m.paused){
+        setStatus('warn', '<b>PAUSED</b> · nothing is being recorded');
+      } else {
+        setStatus(m.locked?'on':'warn',
+          m.locked ? `${m.recording?'<b>REC</b> · ':''}Tracking · marker at <b>${(m.angle??0).toFixed(0)}°</b>`
+                   : `Streaming · no marker (${m.blobs||0} blobs in range)`);
+      }
+    }
+  };
+  ws.onclose = ev => {
+    state.ws = null;
+    state.backfilling = false;
+    if(ev.code===4401){ stopSendLoop(); toast('Session expired'); location.reload(); return; }
+    if(ev.code===4409){
+      stopSendLoop();
+      setStatus('off','Another camera is already streaming');
+      state.streaming=false; syncButtons(); return;
+    }
+    if(state.streaming){
+      // Deliberately do NOT stop capturing - restart the loop at the slower
+      // offline rate so the outage is recorded rather than lost.
+      startSendLoop();
+      const secs = Math.round(state.reconnectDelay/1000);
+      setStatus('warn',
+        `Offline — recording to phone (${state.bufferCount} frames) · retry in ${secs}s`);
+      setTimeout(()=>{ if(state.streaming) connect(); }, state.reconnectDelay);
+      // Back off so a rig that loses wifi overnight is not hammering the server.
+      state.reconnectDelay = Math.min(state.reconnectDelay*1.8, 30000);
+    } else { stopSendLoop(); setStatus('off','Stopped'); }
+  };
+  ws.onerror = () => {};
+}
+
+/* ---------------- offline frame buffer ----------------
+   The phone is the only device at the rig, so when wifi drops it is the only
+   place data can survive. Rather than stopping, capture continues at a lower
+   rate into IndexedDB and is replayed to the server on reconnect, carrying the
+   original capture timestamps so the angle series has no hole in it.
+
+   Wheels here turn at well under 1 RPM, so 1 fps while offline still
+   oversamples the motion by a wide margin - it is the frame rate, not the
+   science, that is being sacrificed to fit an outage in storage. */
+const DB_NAME = 'evapoflex-rig', STORE = 'frames';
+const MAX_BUFFER_FRAMES = 24000;
+const MAX_BUFFER_BYTES  = 400 * 1024 * 1024;
+
+/* Offline frames are stored smaller and rougher than live ones. They only ever
+   have to be good enough to LOCATE green tape, never to look at - so dropping
+   to 480px at low quality costs no tracking accuracy (blob areas are measured
+   as a fraction of frame area, and the calibration is normalised, so both
+   scale automatically) while cutting ~40KB/frame to ~12KB. That is the
+   difference between riding out one hour of the laptop being off and riding
+   out a whole night. */
+const OFFLINE_WIDTH = 480;
+const OFFLINE_QUALITY = 0.45;
+
+let idb = null;
+function openDB(){
+  return new Promise((res, rej) => {
+    const rq = indexedDB.open(DB_NAME, 1);
+    rq.onupgradeneeded = () => {
+      const db = rq.result;
+      if(!db.objectStoreNames.contains(STORE))
+        db.createObjectStore(STORE, {autoIncrement:true});
+    };
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+function tx(mode){ return idb.transaction(STORE, mode).objectStore(STORE); }
+function req(r){ return new Promise((res,rej)=>{ r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+
+async function bufferFrame(t, blob){
+  if(!idb) return;
+  await req(tx('readwrite').add({t, blob, size: blob.size}));
+  state.bufferCount++;
+  state.bufferBytes += blob.size;
+  // Evict oldest first: during a long outage the recent past is the part most
+  // likely to still be worth having, and an honest reported gap beats a silent
+  // write failure once the quota is hit.
+  while(state.bufferCount > MAX_BUFFER_FRAMES || state.bufferBytes > MAX_BUFFER_BYTES){
+    const store = tx('readwrite');
+    const cursor = await req(store.openCursor());
+    if(!cursor) break;
+    state.bufferBytes -= (cursor.value.size || 0);
+    state.bufferCount--;
+    state.dropped++;
+    await req(cursor.delete());
+  }
+  localStorage.setItem('rig-dropped', String(state.dropped));
+  updateBufferUI();
+}
+
+async function recountBuffer(){
+  if(!idb) return;
+  const all = await req(tx('readonly').getAll());
+  state.bufferCount = all.length;
+  state.bufferBytes = all.reduce((a,f)=>a+(f.size||0), 0);
+  state.dropped = +(localStorage.getItem('rig-dropped') || 0);
+  updateBufferUI();
+}
+
+/* How much more outage the buffer can absorb, in hours, at the current offline
+   rate. Stated in hours because that is the question actually being asked -
+   "can this survive the laptop being off overnight?" - and a frame count does
+   not answer it. */
+function bufferHoursLeft(){
+  const fps = +$('s-offline-fps').value || 1;
+  const byFrames = (MAX_BUFFER_FRAMES - state.bufferCount) / fps;
+  const perFrame = state.bufferCount > 40
+    ? state.bufferBytes / state.bufferCount : 12 * 1024;
+  const byBytes = ((MAX_BUFFER_BYTES - state.bufferBytes) / perFrame) / fps;
+  return Math.max(0, Math.min(byFrames, byBytes)) / 3600;
+}
+
+function updateBufferUI(){
+  const mb = (state.bufferBytes/1048576).toFixed(1);
+  $('buf-count').textContent = state.bufferCount.toLocaleString();
+  $('buf-size').textContent  = mb + ' MB';
+  $('buf-dropped').textContent = state.dropped.toLocaleString();
+  const hrs = bufferHoursLeft();
+  $('buf-left').textContent = hrs >= 1 ? `${hrs.toFixed(1)}h headroom`
+                                       : `${Math.round(hrs*60)}m headroom`;
+  const row = $('buf-row');
+  row.style.display = (state.bufferCount || state.dropped) ? 'block' : 'none';
+  const pct = Math.max(state.bufferCount/MAX_BUFFER_FRAMES,
+                       state.bufferBytes/MAX_BUFFER_BYTES) * 100;
+  $('buf-fill').style.width = Math.min(100, pct) + '%';
+  $('buf-fill').style.background = pct > 85 ? '#ef4444' : (pct > 60 ? '#c2410c' : '#2d7cb5');
+}
+
+/* Replay everything buffered, oldest first, before resuming live frames.
+   Loops until the store is empty so frames captured *during* the replay (a
+   slow upload can take a while) go out in order too. */
+async function drainBuffer(){
+  const ws = state.ws;
+  if(!idb || !ws || ws.readyState!==WebSocket.OPEN) return;
+  if(state.bufferCount === 0) return;
+
+  state.backfilling = true;
+  ws.send(JSON.stringify({type:'backfill_start', count: state.bufferCount,
+                          dropped: state.dropped}));
+  let sent = 0;
+  try{
+    while(true){
+      const store = tx('readonly');
+      const keys = await req(store.getAllKeys(null, 50));
+      if(!keys.length) break;
+      const rows = await req(tx('readonly').getAll(IDBKeyRange.bound(keys[0], keys[keys.length-1])));
+      for(const row of rows){
+        if(ws.readyState!==WebSocket.OPEN) throw new Error('socket closed mid-replay');
+        // Respect backpressure so the replay cannot blow up the send queue.
+        while(ws.bufferedAmount > 600000) await new Promise(r=>setTimeout(r,60));
+        ws.send(JSON.stringify({type:'meta', t: row.t}));
+        ws.send(await row.blob.arrayBuffer());
+        sent++;
+        if(sent % 10 === 0){
+          setStatus('warn', `Restoring buffered data… <b>${sent}</b>/${state.bufferCount + sent}`);
+        }
+      }
+      await req(tx('readwrite').delete(IDBKeyRange.bound(keys[0], keys[keys.length-1])));
+      await recountBuffer();
+    }
+    ws.send(JSON.stringify({type:'backfill_end'}));
+    state.dropped = 0;
+    localStorage.setItem('rig-dropped', '0');
+    toast(`Restored ${sent} buffered frames`);
+  }catch(e){
+    toast('Replay interrupted — data kept for next reconnect');
+  }
+  state.backfilling = false;
+  await recountBuffer();
+}
+
+/* ---------------- frame pump ---------------- */
+const canvas = document.createElement('canvas');
+const ctx = canvas.getContext('2d', {alpha:false});
+
+function online(){
+  return state.ws && state.ws.readyState === WebSocket.OPEN;
+}
+
+/* ---------------- WebRTC publishing ----------------
+   When an SFU is configured the phone publishes H.264 to it and viewers
+   subscribe there, so live video never passes through our server. That is what
+   makes the feed watchable: relaying it ourselves cost one full copy of the
+   stream on the server's uplink per viewer.
+
+   The JPEG path over the WebSocket does not go away — it becomes tracking-only
+   at a couple of frames a second. Two jobs, opposite needs: viewing wants frame
+   rate and sharpness, tracking wants marker geometry a few times a second. On a
+   0.8 RPM wheel, 2fps is 2.4 degrees between samples. */
+async function startPublishing(){
+  let cfg;
+  try{
+    cfg = await api('/api/stream/config');
+  }catch(e){ return false; }
+  if(!cfg.enabled) return false;
+
+  if(!window.LivekitClient){
+    // The library is loaded from a CDN. If it did not arrive we stay on the
+    // WebSocket path rather than leaving the operator with no feed at all.
+    toast('Video library unavailable — sending frames the slower way');
+    return false;
+  }
+  try{
+    const t = await api('/api/stream/token', {method:'POST'});
+    if(!t.publish){ toast('This account cannot broadcast'); return false; }
+
+    const room = new LivekitClient.Room({
+      adaptiveStream: false,          // we publish; adaptation is per-subscriber
+      dynacast: true,                 // stop encoding layers nobody is watching
+    });
+    await room.connect(t.url, t.token);
+    const track = state.stream.getVideoTracks()[0];
+    await room.localParticipant.publishTrack(track, {
+      name: 'rig',
+      simulcast: true,                // let each viewer pick a layer that fits
+      videoCodec: 'h264',
+      degradationPreference: 'maintain-framerate',
+    });
+    state.room = room;
+    room.on(LivekitClient.RoomEvent.Disconnected, () => {
+      state.room = null;
+      if(state.streaming){
+        toast('Video link dropped — falling back');
+        startSendLoop();              // re-rate the JPEG path for viewing
+      }
+    });
+    return true;
+  }catch(e){
+    toast('Could not start video — sending frames the slower way');
+    return false;
+  }
+}
+
+function stopPublishing(){
+  if(state.room){ try{ state.room.disconnect(); }catch(e){} state.room = null; }
+}
+
+function startSendLoop(){
+  stopSendLoop();
+  // Offline we deliberately slow down: the wheel moves far slower than even
+  // 1 fps resolves, and a lower rate multiplies how long an outage we survive.
+  // When the SFU carries the video, this path is tracking-only and drops to a
+  // couple of frames a second regardless of the viewing rate the operator set.
+  const fps = !online() ? +$('s-offline-fps').value
+            : state.room ? TRACKING_FPS
+            : +$('s-fps').value;
+  state.sendTimer = setInterval(captureFrame, 1000/fps);
+}
+function stopSendLoop(){ if(state.sendTimer){ clearInterval(state.sendTimer); state.sendTimer=null; } }
+
+function captureFrame(){
+  const v = $('video');
+  if(!state.streaming || !v.videoWidth) return;
+  if(state.paused) return;         // maintenance: capture nothing at all
+
+  // Decide the format up front: a frame headed for the buffer is encoded
+  // small, one headed for the wire is encoded at the live settings.
+  const goingToBuffer = !online() || state.backfilling;
+  const targetW = goingToBuffer ? OFFLINE_WIDTH : +$('s-w').value;
+  const quality = goingToBuffer ? OFFLINE_QUALITY : +$('s-q').value/100;
+
+  const scale = Math.min(1, targetW / v.videoWidth);
+  canvas.width  = Math.round(v.videoWidth  * scale);
+  canvas.height = Math.round(v.videoHeight * scale);
+  ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+
+  const t = (performance.now() - state.t0)/1000;
+  canvas.toBlob(async blob => {
+    if(!blob) return;
+    const ws = state.ws;
+    // While a replay is in flight, new frames join the back of the buffer so
+    // the server never sees them out of chronological order.
+    if(online() && !state.backfilling){
+      // Congested uplink: DROP this frame rather than queue or buffer it.
+      // Anything we hold back arrives describing the past, and the tracker
+      // would then be computing live statistics from a stale picture. At 8fps
+      // on a sub-1-RPM wheel a dropped frame costs nothing measurable;
+      // seconds of latency on the numbers costs a lot.
+      if(ws.bufferedAmount > 250000){ state.skipped++; return; }
+      ws.send(JSON.stringify({type:'meta', t, sent: performance.now()}));
+      ws.send(await blob.arrayBuffer());
+      state.frames++;
+    } else {
+      // Genuinely offline — now preserving the data is what matters.
+      await bufferFrame(t, blob);
+    }
+  }, 'image/jpeg', quality);
+}
+
+/* ---------------- streaming control ---------------- */
+$('stream-btn').onclick = () => state.streaming ? stopStreaming() : startStreaming();
+
+async function startStreaming(){
+  if(!state.stream){ toast('Camera not ready'); return; }
+  state.streaming = true;
+  state.t0 = performance.now();
+  state.frames = 0;
+  acquireWakeLock();
+  connect();
+  syncButtons();
+  // Publishing is attempted after the WebSocket is up, so tracking starts
+  // immediately either way and video quality is the thing that improves.
+  const publishing = await startPublishing();
+  if(publishing){
+    toast(`Broadcasting video · sending ${TRACKING_FPS} fps for tracking`);
+    startSendLoop();                  // re-rate now that the SFU has the video
+    syncButtons();
+  }
+}
+function stopStreaming(){
+  state.streaming = false;
+  stopSendLoop();
+  stopPublishing();
+  if(state.ws){ state.ws.close(); state.ws=null; }
+  if(state.wakeLock){ state.wakeLock.release().catch(()=>{}); state.wakeLock=null; }
+  setStatus('off','Stopped');
+  syncButtons();
+}
+
+/* ---------------- run control ---------------- */
+$('run-btn').onclick = async () => {
+  try{
+    if(state.recording){
+      const res = await api('/api/run/stop',{method:'POST'});
+      state.recording=false;
+      const m = res.summary.metrics;
+      toast(`Saved ${res.summary.id} · ${m.runtime} · ${m.avg_rpm} RPM`);
+    } else {
+      if(!state.streaming){ toast('Start streaming first'); return; }
+      const res = await api('/api/run/start',{method:'POST',
+        body: JSON.stringify({design: $('design').value.trim() || 'EED01M'})});
+      state.recording=true;
+      toast(`Recording ${res.run_key}`);
+    }
+  }catch(e){ toast(e.message); }
+  syncButtons();
+};
+
+$('pause-btn').onclick = async () => {
+  const btn = $('pause-btn'); btn.disabled = true;
+  try{
+    if(state.paused){
+      await api('/api/run/resume',{method:'POST'});
+      toast('Resumed — re-acquiring the marker');
+    } else {
+      const reason = prompt('What are you doing? (shown in the run record)',
+                            'maintenance') ;
+      if(reason === null){ btn.disabled = false; return; }
+      await api('/api/run/pause',{method:'POST', body: JSON.stringify({reason})});
+      toast('Paused — nothing is being recorded');
+    }
+  }catch(e){ toast(e.message); }
+  btn.disabled = false;
+};
+
+function syncButtons(){
+  $('stream-btn').textContent = state.streaming ? 'Stop streaming' : 'Start streaming';
+  $('stream-btn').className   = state.streaming ? 'btn btn-danger' : 'btn';
+  $('run-btn').textContent    = state.recording ? 'Stop recording' : 'Record run';
+  $('run-btn').className      = state.recording ? 'btn btn-danger' : 'btn btn-ghost';
+  // Pausing only means something while a run is being recorded.
+  $('pause-row').style.display = state.recording ? 'flex' : 'none';
+  $('pause-btn').textContent = state.paused ? 'Resume recording' : 'Pause for maintenance';
+  $('pause-btn').className   = state.paused ? 'btn' : 'btn btn-ghost';
+  $('run-btn').disabled = state.paused;   // stop via Resume first, deliberately
+}
+
+function setStatus(kind, html){
+  $('dot').className = 'dot ' + kind;
+  $('status').innerHTML = html;
+}
+
+/* ---------------- calibration ---------------- */
+function applyCalibration(cal){
+  state.cal = cal;
+  $('s-rad').value  = cal.radius;      $('v-rad').textContent  = (+cal.radius).toFixed(3);
+  $('s-band').value = cal.band_frac;   $('v-band').textContent = Math.round(cal.band_frac*100)+'%';
+  $('s-amin').value = cal.min_area_frac;
+  $('v-amin').textContent = (cal.min_area_frac*100).toFixed(3)+'%';
+}
+
+async function pushCalibration(patch){
+  Object.assign(state.cal, patch);
+  try{ await api('/api/live/calibrate',{method:'POST', body:JSON.stringify(patch)}); }
+  catch(e){ toast(e.message); }
+}
+
+let calDebounce;
+function pushDebounced(patch){
+  Object.assign(state.cal || (state.cal={}), patch);
+  clearTimeout(calDebounce);
+  calDebounce = setTimeout(()=>pushCalibration(patch), 250);
+}
+
+$('s-rad').oninput  = e => { $('v-rad').textContent=(+e.target.value).toFixed(3);
+                             pushDebounced({radius:+e.target.value}); };
+$('s-band').oninput = e => { $('v-band').textContent=Math.round(e.target.value*100)+'%';
+                             pushDebounced({band_frac:+e.target.value}); };
+$('s-amin').oninput = e => { $('v-amin').textContent=(e.target.value*100).toFixed(3)+'%';
+                             pushDebounced({min_area_frac:+e.target.value}); };
+$('s-hue').oninput  = e => {
+  $('v-hue').textContent = '±'+e.target.value;
+  if(!state.cal || !state.cal.hsv_lo) return;
+  const mid = (state.cal.hsv_lo[0] + state.cal.hsv_hi[0])/2, w = +e.target.value;
+  pushDebounced({hsv_lo:[Math.max(0,Math.round(mid-w)), state.cal.hsv_lo[1], state.cal.hsv_lo[2]],
+                 hsv_hi:[Math.min(179,Math.round(mid+w)), 255, 255]});
+};
+$('s-fps').oninput = e => { $('v-fps').textContent = e.target.value+' fps';
+                            if(state.streaming) startSendLoop(); };
+$('s-offline-fps').oninput = e => { $('v-offline-fps').textContent = e.target.value+' fps';
+                                    if(state.streaming && !online()) startSendLoop(); };
+$('s-w').oninput   = e => { $('v-w').textContent = e.target.value+' px'; };
+$('s-q').oninput   = e => { $('v-q').textContent = e.target.value+'%'; };
+
+$('autofit').onclick = async () => {
+  try{
+    const res = await api('/api/live/calibrate',{method:'POST', body:JSON.stringify({mode:'auto'})});
+    applyCalibration(res.calibration);
+    toast(`Ring fitted from ${res.fit.points} points over ${res.fit.spread_deg}°`);
+  }catch(e){ toast(e.message); }
+};
+
+$('tapmode').onclick = () => {
+  state.tapSample = !state.tapSample;
+  $('tapmode').textContent = state.tapSample ? 'Tap the marker now…' : 'Tap video to sample colour';
+  $('tapmode').className = state.tapSample ? 'btn' : 'btn btn-ghost';
+};
+
+/* ---------------- overlay + gestures ---------------- */
+const ov = $('overlay');
+
+/* Maps a touch on the letterboxed <video> to normalised frame coordinates.
+   object-fit:contain means the painted image rarely fills the element, so the
+   dead bands have to come out or every tap lands off-target. */
+function toFrameCoords(clientX, clientY){
+  const v=$('video'), rect=ov.getBoundingClientRect();
+  if(!v.videoWidth) return null;
+  const sx=rect.width/v.videoWidth, sy=rect.height/v.videoHeight;
+  const s=Math.min(sx,sy);
+  const dw=v.videoWidth*s, dh=v.videoHeight*s;
+  const ox=(rect.width-dw)/2, oy=(rect.height-dh)/2;
+  const x=(clientX-rect.left-ox)/dw, y=(clientY-rect.top-oy)/dh;
+  if(x<0||x>1||y<0||y>1) return null;
+  return {x,y};
+}
+
+let dragging=false, pinchStart=null;
+ov.addEventListener('touchstart', e => {
+  if(e.touches.length===2){
+    const [a,b]=e.touches;
+    pinchStart={ d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY),
+                 r:state.cal ? state.cal.radius : 0.35 };
+    dragging=false;
+  } else if(e.touches.length===1){
+    const p=toFrameCoords(e.touches[0].clientX, e.touches[0].clientY);
+    if(!p) return;
+    if(state.tapSample){
+      api('/api/live/calibrate',{method:'POST', body:JSON.stringify({mode:'color', x:p.x, y:p.y})})
+        .then(res=>{ applyCalibration(res.calibration); state.cal=res.calibration;
+                     toast(`Sampled H${res.sampled.sampled[0]} S${res.sampled.sampled[1]} V${res.sampled.sampled[2]}`);
+                     $('tapmode').click(); })
+        .catch(err=>toast(err.message));
+      e.preventDefault(); return;
+    }
+    dragging=true;
+  }
+  e.preventDefault();
+}, {passive:false});
+
+ov.addEventListener('touchmove', e => {
+  if(e.touches.length===2 && pinchStart){
+    const [a,b]=e.touches;
+    const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+    const r=Math.max(0.05, Math.min(0.7, pinchStart.r * d/pinchStart.d));
+    $('s-rad').value=r; $('v-rad').textContent=r.toFixed(3);
+    pushDebounced({radius:r});
+  } else if(dragging && e.touches.length===1){
+    const p=toFrameCoords(e.touches[0].clientX, e.touches[0].clientY);
+    if(p) pushDebounced({center:[+p.x.toFixed(5), +p.y.toFixed(5)]});
+  }
+  e.preventDefault();
+}, {passive:false});
+
+ov.addEventListener('touchend', e => {
+  if(e.touches.length===0){ dragging=false; pinchStart=null; }
+}, {passive:false});
+
+function drawOverlay(){
+  const v=$('video'), rect=ov.getBoundingClientRect();
+  const dpr=window.devicePixelRatio||1;
+  if(ov.width!==rect.width*dpr||ov.height!==rect.height*dpr){
+    ov.width=rect.width*dpr; ov.height=rect.height*dpr;
+  }
+  const c=ov.getContext('2d');
+  c.setTransform(dpr,0,0,dpr,0,0);
+  c.clearRect(0,0,rect.width,rect.height);
+
+  if(state.cal && v.videoWidth){
+    const s=Math.min(rect.width/v.videoWidth, rect.height/v.videoHeight);
+    const dw=v.videoWidth*s, dh=v.videoHeight*s;
+    const ox=(rect.width-dw)/2, oy=(rect.height-dh)/2;
+    const cx=ox+state.cal.center[0]*dw, cy=oy+state.cal.center[1]*dh;
+    const r=state.cal.radius*dw, band=state.cal.band_frac*r;
+
+    c.strokeStyle='rgba(74,159,212,.85)'; c.lineWidth=2;
+    c.beginPath(); c.arc(cx,cy,r,0,Math.PI*2); c.stroke();
+    c.strokeStyle='rgba(74,159,212,.28)'; c.lineWidth=1;
+    c.beginPath(); c.arc(cx,cy,r+band,0,Math.PI*2); c.stroke();
+    c.beginPath(); c.arc(cx,cy,Math.max(r-band,1),0,Math.PI*2); c.stroke();
+
+    c.fillStyle='rgba(74,159,212,.9)';
+    c.beginPath(); c.arc(cx,cy,4,0,Math.PI*2); c.fill();
+
+    if(state.lastAck.locked && state.lastAck.angle!=null){
+      const a=-state.lastAck.angle*Math.PI/180;
+      const mx=cx+Math.cos(a)*r, my=cy+Math.sin(a)*r;
+      c.strokeStyle='rgba(34,197,94,.55)'; c.lineWidth=1.5;
+      c.beginPath(); c.moveTo(cx,cy); c.lineTo(mx,my); c.stroke();
+      c.fillStyle='#22c55e';
+      c.beginPath(); c.arc(mx,my,7,0,Math.PI*2); c.fill();
+    }
+  }
+  requestAnimationFrame(drawOverlay);
+}
+
+/* ---------------- panels ---------------- */
+document.querySelectorAll('.seg button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('.seg button').forEach(x=>x.classList.remove('sel'));
+    document.querySelectorAll('.panel').forEach(p=>p.classList.remove('open'));
+    b.classList.add('sel');
+    $('p-'+b.dataset.panel).classList.add('open');
+  };
+});
+
+/* Blank the chips once acks stop arriving, so a frozen feed is not mistaken
+   for a stalled wheel reading a genuine 0.000 RPM. */
+setInterval(() => {
+  if(!state.streaming) return;
+  if(Date.now() - (state.lastAckAt||0) > 6000){
+    ['r-rpm','r-rev','r-lock','r-fps'].forEach(id => $(id).textContent='—');
+  }
+}, 2000);
+
+syncButtons();
+checkAuth();
+</script>
+</body>
+</html>

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign In — Evapoflex</title>
+<link rel="icon" type="image/png" href="./assets/images/favicon.png">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Verdana,Geneva,sans-serif;color:#1a1e2a;background:#f5f4f0;min-height:100vh;
+     display:flex;align-items:center;justify-content:center;padding:40px 24px;
+     -webkit-font-smoothing:antialiased}
+.nz{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:0.035;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.glow{position:fixed;top:50%;left:50%;width:900px;height:900px;transform:translate(-50%,-50%);
+      border-radius:50%;background:radial-gradient(circle,rgba(45,124,181,0.09) 0%,transparent 60%);
+      pointer-events:none;z-index:0}
+
+.card{position:relative;z-index:1;width:100%;max-width:420px;background:rgba(255,255,255,0.72);
+      backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+      border:1px solid rgba(45,124,181,0.14);border-radius:18px;padding:44px 40px;
+      box-shadow:0 20px 70px rgba(0,0,0,0.07)}
+.logo{display:block;font-size:20px;font-weight:600;color:#2d7cb5;letter-spacing:-0.02em;
+      text-decoration:none;margin-bottom:6px}
+.sec-label{font-size:10px;font-weight:600;letter-spacing:0.2em;text-transform:uppercase;
+           color:#2d7cb5;margin-bottom:22px}
+h1{font-family:Verdana,Geneva,sans-serif;font-size:26px;font-weight:300;line-height:1.15;
+   margin-bottom:10px}
+.desc{font-size:14px;font-weight:300;color:rgba(0,0,0,0.45);line-height:1.65;margin-bottom:30px}
+
+.field{margin-bottom:16px}
+.field label{display:block;font-size:10px;font-weight:600;letter-spacing:0.14em;
+             text-transform:uppercase;color:rgba(0,0,0,0.4);margin-bottom:8px}
+.field input{width:100%;padding:14px 16px;font-size:15px;font-family:inherit;color:#1a1e2a;
+             background:rgba(255,255,255,0.85);border:1.5px solid rgba(45,124,181,0.18);
+             border-radius:10px;outline:none;transition:border-color .25s}
+.field input:focus{border-color:#2d7cb5}
+
+.btn-p{width:100%;padding:15px;font-size:12px;font-weight:600;letter-spacing:0.07em;
+       text-transform:uppercase;background:#2d7cb5;color:#fff;border:none;border-radius:60px;
+       cursor:pointer;transition:all .3s;font-family:inherit;margin-top:8px}
+.btn-p:hover{background:#4a9fd4;box-shadow:0 8px 34px rgba(45,124,181,0.28)}
+.btn-p[disabled]{opacity:.5;cursor:default;box-shadow:none}
+
+.err{font-size:13px;color:#ef4444;margin-top:16px;min-height:18px;line-height:1.5}
+.foot{margin-top:28px;padding-top:22px;border-top:1px solid rgba(45,124,181,0.12);
+      font-size:12px;color:rgba(0,0,0,0.4);line-height:1.7}
+.foot a{color:#2d7cb5;text-decoration:none}
+.foot a:hover{text-decoration:underline}
+@media(max-width:520px){.card{padding:34px 26px}}
+</style>
+</head>
+<body>
+<div class="nz"></div><div class="glow"></div>
+
+<div class="card">
+  <a class="logo" href="./index.html">evapoflex</a>
+  <div class="sec-label">Rig Access</div>
+  <h1>Sign in</h1>
+  <p class="desc">The live wheel feed and test archive are private. Sign in with your Evapoflex account.</p>
+
+  <form id="form">
+    <div class="field">
+      <label for="u">Username</label>
+      <input id="u" type="text" autocapitalize="none" autocorrect="off" autocomplete="username" required>
+    </div>
+    <div class="field">
+      <label for="p">Password</label>
+      <input id="p" type="password" autocomplete="current-password" required>
+    </div>
+    <button class="btn-p" id="go" type="submit">Sign in</button>
+  </form>
+  <div class="err" id="err"></div>
+
+  <div class="foot">
+    Setting up the phone at the rig? Open <a href="./capture.html">the camera page</a> on that device
+    and sign in there with the camera account.
+  </div>
+</div>
+
+<script>
+const params = new URLSearchParams(location.search);
+const next = params.get('next') || 'live.html';
+
+/* Where a role can actually go, in preference order. A camera account has no
+   'view' permission, so sending it to live.html would bounce straight back. */
+function landingFor(user){
+  if(user.permissions.includes('view')) return next;
+  if(user.permissions.includes('stream')) return 'capture.html';
+  return 'index.html';
+}
+
+document.getElementById('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = document.getElementById('go');
+  const err = document.getElementById('err');
+  btn.disabled = true; err.textContent = '';
+  try{
+    const r = await fetch('/api/auth/login', {
+      method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username: document.getElementById('u').value,
+                            password: document.getElementById('p').value})
+    });
+    const data = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.detail || 'Sign in failed');
+    location.href = './' + landingFor(data.user);
+  }catch(ex){
+    err.textContent = ex.message;
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Accounts — Evapoflex</title>
+<link rel="icon" type="image/png" href="./assets/images/favicon.png">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Verdana,Geneva,sans-serif;color:#1a1e2a;background:#f5f4f0;-webkit-font-smoothing:antialiased}
+.nz{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:0.035;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.nv{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;
+    padding:12px 48px;background:rgba(245,244,240,0.92);backdrop-filter:blur(24px);
+    border-bottom:1px solid rgba(45,124,181,0.12)}
+.nv-logo{font-weight:600;font-size:18px;color:#2d7cb5;text-decoration:none;letter-spacing:-.02em}
+.nv-links{display:flex;gap:30px;align-items:center}
+.nv-link{font-size:12px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;
+         color:rgba(0,0,0,.45);text-decoration:none;cursor:pointer}
+.nv-link:hover,.nv-link.on{color:#2d7cb5}
+.who{font-size:11px;color:rgba(0,0,0,.35)}.who b{color:#2d7cb5}
+.wrap{position:relative;z-index:1;max-width:960px;margin:0 auto;padding:104px 48px 80px}
+.sec-label{font-size:10px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:#2d7cb5;margin-bottom:12px}
+.sec-title{font-size:32px;font-weight:300;margin-bottom:10px}
+.sec-desc{font-size:15px;font-weight:300;color:rgba(0,0,0,.45);line-height:1.7;max-width:640px;margin-bottom:34px}
+.panel{background:rgba(255,255,255,.66);border:1px solid rgba(45,124,181,.13);border-radius:14px;
+       overflow:hidden;margin-bottom:26px}
+.panel-h{padding:15px 20px;border-bottom:1px solid rgba(45,124,181,.1);font-size:11px;font-weight:600;
+         letter-spacing:.14em;text-transform:uppercase;color:rgba(0,0,0,.5)}
+.panel-b{padding:20px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-size:9px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;
+   color:rgba(0,0,0,.4);padding:12px 20px;border-bottom:1px solid rgba(45,124,181,.14)}
+td{padding:12px 20px;border-bottom:1px solid rgba(45,124,181,.07)}
+tr:last-child td{border:none}
+select,input{padding:9px 12px;font-size:13px;font-family:inherit;border:1.5px solid rgba(45,124,181,.18);
+             border-radius:8px;outline:none;background:#fff}
+select:focus,input:focus{border-color:#2d7cb5}
+.btn{padding:9px 18px;font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+     border-radius:60px;cursor:pointer;font-family:inherit;border:none;transition:all .3s}
+.btn-p{background:#2d7cb5;color:#fff}.btn-p:hover{background:#4a9fd4}
+.btn-g{background:transparent;color:#2d7cb5;border:1.5px solid rgba(45,124,181,.3)}
+.btn-d{background:transparent;color:#ef4444;border:1.5px solid rgba(239,68,68,.3)}
+.btn-d:hover{background:rgba(239,68,68,.06)}
+.form{display:grid;grid-template-columns:1fr 1fr auto auto;gap:10px;align-items:center}
+.roles{font-size:12px;color:rgba(0,0,0,.45);line-height:1.9;margin-top:16px}
+.roles b{color:#1a1e2a;font-weight:600}
+.toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:#1a1e2a;color:#fff;
+       padding:13px 24px;border-radius:10px;font-size:13px;z-index:400;opacity:0;transition:opacity .3s;
+       pointer-events:none;max-width:90vw;text-align:center}
+.toast.show{opacity:1}
+@media(max-width:760px){.wrap{padding:96px 20px 60px}.nv{padding:12px 20px}.form{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="nz"></div>
+<nav class="nv">
+  <a class="nv-logo" href="./index.html">evapoflex</a>
+  <div class="nv-links">
+    <a class="nv-link" href="./live.html">Live Rig</a>
+    <a class="nv-link" href="./runs.html">Test Runs</a>
+    <a class="nv-link on" href="./admin.html">Accounts</a>
+    <span class="who" id="who"></span>
+    <a class="nv-link" href="#" id="out">Sign out</a>
+  </div>
+</nav>
+
+<div class="wrap">
+  <div class="sec-label">Administration</div>
+  <h1 class="sec-title">Accounts &amp; Access</h1>
+  <p class="sec-desc">Control who can watch the rig, who can drive it, and which account the mounted
+    phone uses to stream.</p>
+
+  <div class="panel">
+    <div class="panel-h">Add an account</div>
+    <div class="panel-b">
+      <div class="form">
+        <input id="nu" placeholder="username" autocapitalize="none">
+        <input id="np" type="password" placeholder="password (8+ characters)">
+        <select id="nr">
+          <option value="viewer">viewer</option>
+          <option value="operator">operator</option>
+          <option value="camera">camera</option>
+          <option value="admin">admin</option>
+        </select>
+        <button class="btn btn-p" id="add">Create</button>
+      </div>
+      <div class="roles">
+        <b>viewer</b> — watch the live feed and read the run archive<br>
+        <b>operator</b> — everything a viewer can do, plus start/stop runs, calibrate and stream<br>
+        <b>camera</b> — a device account for the phone: streams and drives runs, but cannot read the
+          archive or manage accounts<br>
+        <b>admin</b> — full access, including this page
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-h">Accounts</div>
+    <table>
+      <thead><tr><th>Username</th><th>Role</th><th>Last sign-in</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <div class="panel-h">Write a tracking algorithm</div>
+    <div class="panel-b">
+      <p class="roles" style="margin-bottom:16px">
+        Takes a few frames from the live camera and asks Claude to write a tracker
+        for the markers it can actually see, using the current calibration as a
+        starting point. The result is saved as a new algorithm you can review and
+        then select on the <a href="./console.html" style="color:#2d7cb5">console</a>.
+      </p>
+      <div class="form">
+        <input id="au-notes" placeholder="anything it should know (optional) — e.g. 'the top-left bracket is not a marker'">
+        <button class="btn btn-p" id="au-go">Sample &amp; write</button>
+      </div>
+      <div class="au-warn">
+        The camera must be streaming. Generated code is <b>not</b> switched on
+        automatically — read it first. It runs on this machine with the same
+        access as the rest of the server.
+      </div>
+      <div class="au-out" id="au-out" style="display:none">
+        <div class="au-meta" id="au-meta"></div>
+        <pre class="au-code" id="au-code"></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+.au-warn{margin-top:14px;padding:11px 14px;border-radius:9px;font-size:11.5px;line-height:1.7;
+         background:rgba(194,65,12,0.07);border:1px solid rgba(194,65,12,0.2);color:#c2410c}
+.au-warn b{font-weight:600}
+.au-out{margin-top:18px}
+.au-meta{font-size:12px;line-height:1.8;color:rgba(0,0,0,0.6);margin-bottom:12px}
+.au-meta b{color:#1a1e2a}
+.au-meta .lbl{display:block;font-size:9.5px;font-weight:600;letter-spacing:0.13em;
+              text-transform:uppercase;color:rgba(0,0,0,0.35);margin-top:10px}
+.au-code{max-height:420px;overflow:auto;padding:14px 16px;border-radius:9px;
+         background:#0a0b0d;color:#e5e0da;font-size:11px;line-height:1.6;
+         font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre}
+</style>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $=id=>document.getElementById(id);
+let me=null, toastTimer;
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');
+  clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),3000);}
+async function api(p,o={}){const r=await fetch(p,{credentials:'same-origin',
+  headers:{'Content-Type':'application/json'},...o});
+  const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||r.statusText); return d;}
+
+(async function(){
+  try{ me=await api('/api/auth/me'); }catch{ location.href='./login.html?next=admin.html'; return; }
+  if(!me.permissions.includes('admin')){ location.href='./live.html'; return; }
+  $('who').innerHTML=`<b>${me.username}</b> · ${me.role}`;
+  $('out').onclick=async e=>{e.preventDefault();
+    await api('/api/auth/logout',{method:'POST'}).catch(()=>{});location.href='./login.html';};
+  load();
+})();
+
+async function load(){
+  const {users}=await api('/api/users');
+  const ROLES=['viewer','operator','camera','admin'];
+  $('rows').innerHTML=users.map(u=>`
+    <tr>
+      <td style="font-weight:600">${u.username}${u.username===me.username?' <span style="font-weight:400;color:rgba(0,0,0,.35)">(you)</span>':''}</td>
+      <td><select data-u="${u.username}" class="role">
+        ${ROLES.map(r=>`<option value="${r}"${r===u.role?' selected':''}>${r}</option>`).join('')}
+      </select></td>
+      <td style="color:rgba(0,0,0,.45)">${u.last_login?new Date(u.last_login*1000).toLocaleString():'never'}</td>
+      <td style="text-align:right"><button class="btn btn-d" data-del="${u.username}">Remove</button></td>
+    </tr>`).join('');
+
+  document.querySelectorAll('.role').forEach(s=>{
+    s.onchange=async()=>{
+      try{ await api('/api/users/'+s.dataset.u,{method:'PATCH',body:JSON.stringify({role:s.value})});
+           toast(`${s.dataset.u} is now ${s.value}`); }
+      catch(e){ toast(e.message); load(); }
+    };
+  });
+  document.querySelectorAll('[data-del]').forEach(b=>{
+    b.onclick=async()=>{
+      if(!confirm(`Remove ${b.dataset.del}? Their sessions end immediately.`)) return;
+      try{ await api('/api/users/'+b.dataset.del,{method:'DELETE'}); toast('Removed'); load(); }
+      catch(e){ toast(e.message); }
+    };
+  });
+}
+
+$('add').onclick=async()=>{
+  try{
+    await api('/api/users',{method:'POST',body:JSON.stringify({
+      username:$('nu').value, password:$('np').value, role:$('nr').value})});
+    toast(`Created ${$('nu').value}`);
+    $('nu').value=''; $('np').value='';
+    load();
+  }catch(e){ toast(e.message); }
+};
+
+/* ---------------- algorithm authoring ---------------- */
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+$('au-go').onclick = async () => {
+  const btn = $('au-go');
+  btn.disabled = true;
+  btn.textContent = 'Watching the wheel…';
+  $('au-out').style.display = 'none';
+  try{
+    // Minutes, not seconds: the model is reading several frames and writing a
+    // whole file. The default fetch has no timeout, which is what we want.
+    const r = await api('/api/trackers/author', {
+      method: 'POST',
+      body: JSON.stringify({ notes: $('au-notes').value, frames: 5 }),
+    });
+    const g = r.generated;
+    $('au-meta').innerHTML = `
+      <b>${esc(g.label)}</b> &nbsp;·&nbsp; saved as <b>${esc(g.file)}</b>
+      &nbsp;·&nbsp; ${g.frames_used} frames
+      <span class="lbl">What it saw</span>${esc(g.observations)}
+      <span class="lbl">Why this approach</span>${esc(g.rationale)}
+      <span class="lbl">Expects</span>${esc(g.expects)}`;
+    $('au-code').textContent = g.code;
+    $('au-out').style.display = 'block';
+    toast(`Wrote ${g.file} — review it, then select it on the console`);
+  }catch(e){
+    toast(e.message);
+  }
+  btn.disabled = false;
+  btn.textContent = 'Sample & write';
+};
+</script>
+</body>
+</html>

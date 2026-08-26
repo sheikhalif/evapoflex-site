@@ -1,0 +1,8 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+opencv-python-headless>=4.8
+numpy>=1.24
+matplotlib>=3.7
+# Only used by the admin "write a tracking algorithm" feature. The rig runs
+# without it; that one endpoint then returns a 502 naming the missing import.
+anthropic>=1.0

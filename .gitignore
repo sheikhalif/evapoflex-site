@@ -1,0 +1,24 @@
+# Live data: SQLite DB with real accounts and password hashes, plus run output.
+# Never commit this.
+server/data/
+
+# Python
+server/.venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Secrets (env files are how LiveKit keys and admin passwords are supplied)
+.env
+.env.*
+*.pem
+*.key
+
+# macOS
+.DS_Store
+._*
+
+# Editor / local tooling
+.vscode/
+.idea/

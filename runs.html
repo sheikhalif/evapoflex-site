@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Test Runs — Evapoflex</title>
+<link rel="icon" type="image/png" href="./assets/images/favicon.png">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Verdana,Geneva,sans-serif;color:#1a1e2a;background:#f5f4f0;
+     -webkit-font-smoothing:antialiased}
+.nz{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:0.035;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+
+.nv{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;
+    justify-content:space-between;padding:12px 48px;background:rgba(245,244,240,0.92);
+    backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+    border-bottom:1px solid rgba(45,124,181,0.12)}
+.nv-logo{font-weight:600;font-size:18px;color:#2d7cb5;letter-spacing:-0.02em;text-decoration:none}
+.nv-links{display:flex;gap:30px;align-items:center}
+.nv-link{font-size:12px;font-weight:500;letter-spacing:0.05em;text-transform:uppercase;
+         color:rgba(0,0,0,0.45);transition:color .3s;text-decoration:none;cursor:pointer}
+.nv-link:hover,.nv-link.on{color:#2d7cb5}
+.who{font-size:11px;color:rgba(0,0,0,0.35)}
+.who b{color:#2d7cb5;font-weight:600}
+
+.wrap{position:relative;z-index:1;max-width:1320px;margin:0 auto;padding:104px 48px 80px}
+.sec-label{font-size:10px;font-weight:600;letter-spacing:0.2em;text-transform:uppercase;
+           color:#2d7cb5;margin-bottom:12px}
+.sec-title{font-size:32px;font-weight:300;line-height:1.1;margin-bottom:10px}
+.sec-desc{font-size:15px;font-weight:300;color:rgba(0,0,0,0.45);line-height:1.7;max-width:640px}
+.head{margin-bottom:30px}
+
+/* Summary strip */
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;
+       background:rgba(45,124,181,0.12);border:1px solid rgba(45,124,181,0.12);
+       border-radius:12px;overflow:hidden;margin-bottom:28px}
+.strip .cell{background:rgba(255,255,255,0.72);padding:16px 18px}
+.strip .k{font-size:9px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;
+          color:rgba(0,0,0,0.38);margin-bottom:6px}
+.strip .v{font-size:24px;font-weight:300;font-variant-numeric:tabular-nums;color:#2d7cb5}
+
+/* Toolbar */
+.bar{display:flex;gap:10px;align-items:center;margin-bottom:18px;flex-wrap:wrap}
+.bar input,.bar select{padding:10px 14px;font-size:13px;font-family:inherit;
+  border:1.5px solid rgba(45,124,181,0.18);border-radius:9px;outline:none;background:#fff}
+.bar input:focus,.bar select:focus{border-color:#2d7cb5}
+.bar input[type=search]{flex:1;min-width:180px}
+.btn{padding:10px 20px;font-size:11px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;
+     border-radius:60px;cursor:pointer;font-family:inherit;border:none;transition:all .3s}
+.btn-g{background:transparent;color:#2d7cb5;border:1.5px solid rgba(45,124,181,0.3)}
+.btn-g:hover{border-color:#2d7cb5}
+.btn-p{background:#2d7cb5;color:#fff}
+.btn-p:hover{background:#4a9fd4}
+
+/* Table */
+.tbl-wrap{background:rgba(255,255,255,0.66);border:1px solid rgba(45,124,181,0.13);
+          border-radius:14px;overflow:hidden}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:860px}
+th{text-align:left;font-size:9px;font-weight:600;letter-spacing:0.13em;text-transform:uppercase;
+   color:rgba(0,0,0,0.4);padding:14px 16px;border-bottom:1px solid rgba(45,124,181,0.14);
+   white-space:nowrap;cursor:pointer;user-select:none;background:rgba(255,255,255,0.5)}
+th:hover{color:#2d7cb5}
+th .arrow{opacity:.45;font-size:8px;margin-left:3px}
+td{padding:13px 16px;border-bottom:1px solid rgba(45,124,181,0.07);
+   font-variant-numeric:tabular-nums;white-space:nowrap}
+tbody tr{cursor:pointer;transition:background .2s}
+tbody tr:hover{background:rgba(45,124,181,0.045)}
+tbody tr.sel{background:rgba(45,124,181,0.08)}
+.id{font-weight:600;font-variant-numeric:normal}
+.muted{color:rgba(0,0,0,0.4)}
+.pill{display:inline-block;padding:3px 9px;border-radius:20px;font-size:9px;font-weight:600;
+      letter-spacing:.09em;text-transform:uppercase}
+.pill.live{background:rgba(34,197,94,.12);color:#22c55e}
+.pill.imported{background:rgba(45,124,181,.1);color:#2d7cb5}
+.pill.aborted{background:rgba(239,68,68,.1);color:#ef4444}
+.pill.running{background:rgba(194,65,12,.14);color:#c2410c}
+.empty{padding:60px 24px;text-align:center;color:rgba(0,0,0,0.35);font-size:14px;line-height:1.8}
+
+/* Detail drawer */
+.scrim{position:fixed;inset:0;background:rgba(10,11,13,.45);backdrop-filter:blur(3px);
+       z-index:200;opacity:0;pointer-events:none;transition:opacity .3s}
+.scrim.open{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(680px,100vw);background:#f5f4f0;z-index:201;
+        transform:translateX(100%);transition:transform .4s cubic-bezier(.16,1,.3,1);
+        overflow-y:auto;box-shadow:-10px 0 60px rgba(0,0,0,.14)}
+.drawer.open{transform:translateX(0)}
+.dh{position:sticky;top:0;background:rgba(245,244,240,.95);backdrop-filter:blur(20px);
+    padding:22px 30px;border-bottom:1px solid rgba(45,124,181,.14);display:flex;
+    justify-content:space-between;align-items:flex-start;gap:16px;z-index:2}
+.dh h2{font-size:20px;font-weight:400;line-height:1.3}
+.dh .sub{font-size:12px;color:rgba(0,0,0,.42);margin-top:5px}
+.x{background:none;border:none;font-size:22px;color:rgba(0,0,0,.35);cursor:pointer;
+   line-height:1;padding:2px 6px}
+.x:hover{color:#1a1e2a}
+.db{padding:26px 30px 60px}
+.dsec{margin-bottom:30px}
+.dsec h3{font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;
+         color:#2d7cb5;margin-bottom:14px}
+.mgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:1px;
+       background:rgba(45,124,181,.12);border:1px solid rgba(45,124,181,.12);
+       border-radius:10px;overflow:hidden}
+.mgrid .c{background:#efeeea;padding:14px 16px}
+.mgrid .k{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:rgba(0,0,0,.38);
+          margin-bottom:5px}
+.mgrid .v{font-size:19px;font-weight:300;font-variant-numeric:tabular-nums}
+.kv{display:flex;justify-content:space-between;gap:20px;padding:9px 0;font-size:12.5px;
+    border-bottom:1px solid rgba(45,124,181,.08)}
+.kv:last-child{border:none}
+.kv .k{color:rgba(0,0,0,.42);flex-shrink:0}
+.kv .v{text-align:right;word-break:break-word}
+#dchart{width:100%;height:200px;display:block;background:#efeeea;
+        border:1px solid rgba(45,124,181,.12);border-radius:10px}
+.plot{width:100%;border-radius:10px;border:1px solid rgba(45,124,181,.12);display:block;
+      background:#efeeea}
+.dl{display:flex;gap:9px;flex-wrap:wrap}
+.dl a{padding:9px 17px;font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+      border-radius:60px;text-decoration:none;color:#2d7cb5;border:1.5px solid rgba(45,124,181,.3);
+      transition:all .3s}
+.dl a:hover{border-color:#2d7cb5;background:rgba(45,124,181,.05)}
+
+.toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:#1a1e2a;color:#fff;
+       padding:13px 24px;border-radius:10px;font-size:13px;z-index:400;opacity:0;
+       transition:opacity .3s;pointer-events:none}
+.toast.show{opacity:1}
+
+@media(max-width:900px){.wrap{padding:96px 22px 60px}.nv{padding:12px 22px}.nv-links{gap:16px}}
+@media(max-width:640px){.nv-link:not(.on){display:none}.db,.dh{padding-left:20px;padding-right:20px}}
+</style>
+</head>
+<body>
+<div class="nz"></div>
+
+<nav class="nv">
+  <a class="nv-logo" href="./index.html">evapoflex</a>
+  <div class="nv-links">
+    <a class="nv-link" href="./live.html">Live Rig</a>
+    <a class="nv-link on" href="./runs.html">Test Runs</a>
+    <a class="nv-link" href="./archive.html">Models</a>
+    <span class="who" id="who"></span>
+    <a class="nv-link" href="#" id="out">Sign out</a>
+  </div>
+</nav>
+
+<div class="wrap">
+  <div class="head">
+    <div class="sec-label">Test Archive</div>
+    <h1 class="sec-title">Every Run, Every Statistic</h1>
+    <p class="sec-desc">Live runs recorded from the rig camera alongside every offline test processed
+      by the wheel tracker. Same metric definitions throughout, so results compare directly.</p>
+  </div>
+
+  <div class="strip" id="strip"></div>
+
+  <div class="bar">
+    <input type="search" id="q" placeholder="Search by run, design or label…">
+    <select id="f-design"><option value="">All designs</option></select>
+    <select id="f-source">
+      <option value="">All sources</option>
+      <option value="live">Live rig</option>
+      <option value="imported">Offline tracker</option>
+    </select>
+    <button class="btn btn-g" id="rescan">Rescan folder</button>
+  </div>
+
+  <div class="tbl-wrap">
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th data-k="run_key">Run <span class="arrow"></span></th>
+            <th data-k="design">Design <span class="arrow"></span></th>
+            <th data-k="started_at">Date <span class="arrow">▼</span></th>
+            <th data-k="runtime">Runtime <span class="arrow"></span></th>
+            <th data-k="avg_rpm">Avg RPM <span class="arrow"></span></th>
+            <th data-k="best">Best 30s <span class="arrow"></span></th>
+            <th data-k="motion_pct">Motion <span class="arrow"></span></th>
+            <th data-k="continuity_pct">Continuity <span class="arrow"></span></th>
+            <th data-k="efficiency_pct">Efficiency <span class="arrow"></span></th>
+            <th data-k="source">Source <span class="arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="empty" style="display:none"></div>
+  </div>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer">
+  <div class="dh">
+    <div>
+      <h2 id="d-title">—</h2>
+      <div class="sub" id="d-sub"></div>
+    </div>
+    <button class="x" id="d-close">✕</button>
+  </div>
+  <div class="db" id="d-body"></div>
+</aside>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let me=null, runs=[], sortKey='started_at', sortDir=-1, selected=null;
+
+let toastTimer;
+function toast(msg){
+  const t=$('toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),3000);
+}
+
+async function api(path, opts={}){
+  const r = await fetch(path,{credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},...opts});
+  const d = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.detail || r.statusText);
+  return d;
+}
+
+/* metric accessors — runs from either source share the same summary shape */
+const M = {
+  runtime:    r => r.metrics?.runtime ?? '—',
+  avg_rpm:    r => r.metrics?.avg_rpm,
+  motion_pct: r => r.metrics?.motion_pct,
+  continuity_pct: r => r.metrics?.continuity_pct,
+  efficiency_pct: r => r.metrics?.efficiency_pct,
+  best:       r => r.best_window?.rpm,
+};
+
+(async function init(){
+  try{ me = await api('/api/auth/me'); }
+  catch{ location.href='./login.html?next=runs.html'; return; }
+  $('who').innerHTML = `<b>${me.username}</b> · ${me.role}`;
+  $('out').onclick = async e => {
+    e.preventDefault();
+    await api('/api/auth/logout',{method:'POST'}).catch(()=>{});
+    location.href='./login.html';
+  };
+  if(!me.permissions.includes('control')) $('rescan').style.display='none';
+  await load();
+})();
+
+async function load(){
+  const data = await api('/api/runs');
+  runs = data.runs;
+  const sel = $('f-design');
+  sel.innerHTML = '<option value="">All designs</option>' +
+    data.designs.map(d=>`<option value="${d}">${d}</option>`).join('');
+  renderStrip();
+  render();
+}
+
+function renderStrip(){
+  const done = runs.filter(r=>r.status==='complete' && r.metrics?.avg_rpm!=null);
+  const totalS = done.reduce((a,r)=>a+(r.duration_s||0),0);
+  const best = done.reduce((a,r)=> (M.best(r)??0) > (M.best(a)??0) ? r : a, done[0]);
+  const avgEff = done.length
+    ? done.reduce((a,r)=>a+(r.metrics.efficiency_pct||0),0)/done.length : 0;
+  const h = Math.floor(totalS/3600), m = Math.round((totalS%3600)/60);
+  $('strip').innerHTML = `
+    <div class="cell"><div class="k">Total runs</div><div class="v">${runs.length}</div></div>
+    <div class="cell"><div class="k">Hours logged</div><div class="v">${h}<span style="font-size:13px">h ${m}m</span></div></div>
+    <div class="cell"><div class="k">Best 30s RPM</div><div class="v">${best&&M.best(best)!=null?M.best(best).toFixed(3):'—'}</div></div>
+    <div class="cell"><div class="k">Mean efficiency</div><div class="v">${avgEff.toFixed(1)}<span style="font-size:13px">%</span></div></div>
+    <div class="cell"><div class="k">Designs tested</div><div class="v">${new Set(runs.map(r=>r.design)).size}</div></div>`;
+}
+
+function filtered(){
+  const q = $('q').value.trim().toLowerCase();
+  const d = $('f-design').value, s = $('f-source').value;
+  return runs.filter(r => {
+    if(d && r.design!==d) return false;
+    if(s && r.source!==s) return false;
+    if(q){
+      const hay = `${r.run_key} ${r.design||''} ${r.label||''} ${r.started_by||''}`.toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function sortVal(r,k){
+  if(k in M) return M[k](r);
+  return r[k];
+}
+
+function render(){
+  const list = filtered().sort((a,b)=>{
+    let x=sortVal(a,sortKey), y=sortVal(b,sortKey);
+    // Runs missing a metric sink to the bottom regardless of direction, so an
+    // aborted run never tops the "best RPM" sort with an empty cell.
+    if(x==null && y==null) return 0;
+    if(x==null) return 1;
+    if(y==null) return -1;
+    if(typeof x==='string') return x.localeCompare(y)*sortDir;
+    return (x-y)*sortDir;
+  });
+
+  document.querySelectorAll('th .arrow').forEach(a=>a.textContent='');
+  const th=document.querySelector(`th[data-k="${sortKey}"] .arrow`);
+  if(th) th.textContent = sortDir>0 ? '▲' : '▼';
+
+  if(!list.length){
+    $('rows').innerHTML='';
+    $('empty').style.display='block';
+    $('empty').innerHTML = runs.length
+      ? 'No runs match those filters.'
+      : 'No runs yet.<br>Record one from the <a href="./live.html" style="color:#2d7cb5">live rig</a>, or press Rescan folder to import offline results.';
+    return;
+  }
+  $('empty').style.display='none';
+
+  $('rows').innerHTML = list.map(r=>{
+    const f=(v,dp)=> v==null ? '<span class="muted">—</span>' : (+v).toFixed(dp);
+    const pill = r.status==='aborted' ? 'aborted'
+               : r.status==='running' ? 'running' : r.source;
+    const pillText = r.status==='aborted' ? 'aborted'
+                   : r.status==='running' ? 'recording'
+                   : r.source==='live' ? 'live rig' : 'offline';
+    return `<tr data-key="${r.run_key}" class="${selected===r.run_key?'sel':''}">
+      <td class="id">${r.run_key}${r.label?`<div class="muted" style="font-weight:400;font-size:11px;margin-top:2px">${r.label}</div>`:''}</td>
+      <td>${r.design||'<span class="muted">—</span>'}</td>
+      <td>${fmtDate(r.started_at)}</td>
+      <td>${M.runtime(r)}</td>
+      <td>${f(M.avg_rpm(r),3)}</td>
+      <td>${f(M.best(r),3)}</td>
+      <td>${f(M.motion_pct(r),1)}${M.motion_pct(r)!=null?'%':''}</td>
+      <td>${f(M.continuity_pct(r),1)}${M.continuity_pct(r)!=null?'%':''}</td>
+      <td>${f(M.efficiency_pct(r),1)}${M.efficiency_pct(r)!=null?'%':''}</td>
+      <td><span class="pill ${pill}">${pillText}</span></td>
+    </tr>`;
+  }).join('');
+
+  document.querySelectorAll('#rows tr').forEach(tr=>{
+    tr.onclick = () => openRun(tr.dataset.key);
+  });
+}
+
+function fmtDate(ts){
+  if(!ts) return '—';
+  const d=new Date(ts*1000);
+  return d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'});
+}
+
+/* ---------------- sorting + filters ---------------- */
+document.querySelectorAll('th').forEach(th=>{
+  th.onclick = () => {
+    const k=th.dataset.k;
+    if(sortKey===k) sortDir*=-1; else { sortKey=k; sortDir = (k==='run_key'||k==='design'||k==='source')?1:-1; }
+    render();
+  };
+});
+$('q').oninput = render;
+$('f-design').onchange = render;
+$('f-source').onchange = render;
+
+$('rescan').onclick = async () => {
+  const btn = $('rescan');
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Scanning…';
+  try{
+    const r = await api('/api/runs/import',{method:'POST'});
+    let msg = `Scanned ${r.scanned} summaries · ${r.added} new, ${r.updated} updated`;
+    if(r.failed){
+      // Silence here would read as "nothing new", when in fact runs were
+      // skipped because the archive volume stalled.
+      msg += ` · ${r.failed} unreadable (kept from last successful scan)`;
+    }
+    toast(msg);
+    await load();
+  }catch(e){ toast(e.message); }
+  btn.disabled = false;
+  btn.textContent = label;
+};
+
+/* ---------------- detail drawer ---------------- */
+async function openRun(key){
+  selected=key; render();
+  $('scrim').classList.add('open');
+  $('drawer').classList.add('open');
+  $('d-title').textContent = key;
+  $('d-sub').textContent = 'Loading…';
+  $('d-body').innerHTML = '';
+
+  let run, series=null;
+  try{ run = await api('/api/runs/'+encodeURIComponent(key)); }
+  catch(e){ $('d-sub').textContent = e.message; return; }
+  try{ series = await api(`/api/runs/${encodeURIComponent(key)}/series`); }catch{}
+
+  const s = run.summary || {}, m = s.metrics || {};
+  $('d-sub').textContent =
+    `${s.date_pretty || fmtDate(run.started_at)} · ${run.source==='live'?'recorded live':'offline tracker'}` +
+    (run.started_by?` · by ${run.started_by}`:'');
+
+  const cell=(k,v)=>`<div class="c"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+  const kv=(k,v)=> v==null||v===''?'':`<div class="kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+  const n=(v,dp,suf='')=> v==null?'—':(+v).toFixed(dp)+suf;
+
+  let html = `<div class="dsec"><h3>Headline metrics</h3><div class="mgrid">
+      ${cell('Runtime', m.runtime||'—')}
+      ${cell('Avg RPM', n(m.avg_rpm,3))}
+      ${cell('Best 30s', n(s.best_window?.rpm,3))}
+      ${cell('Motion', n(m.motion_pct,2,'%'))}
+      ${cell('Continuity', n(m.continuity_pct,2,'%'))}
+      ${cell('Efficiency', n(m.efficiency_pct,2,'%'))}
+    </div></div>`;
+
+  if(series && series.data.length>1){
+    html += `<div class="dsec"><h3>Rotation over the run</h3>
+      <canvas id="dchart"></canvas></div>`;
+  }
+
+  if(s.outputs?.plot){
+    html += `<div class="dsec"><h3>Master plot</h3>
+      <img class="plot" src="/api/runs/${encodeURIComponent(key)}/asset/plot" alt="Master plot"
+           onerror="this.parentElement.style.display='none'"></div>`;
+  }
+
+  html += `<div class="dsec"><h3>Capture details</h3>
+      ${kv('Design', run.design)}
+      ${kv('Test number', run.test_n)}
+      ${kv('Source video', s.video)}
+      ${kv('Duration', s.duration_s!=null ? s.duration_s.toFixed(1)+' s' : null)}
+      ${kv('Frame rate', s.fps)}
+      ${kv('Resolution', s.resolution)}
+      ${kv('Tracked samples', s.records?.toLocaleString())}
+      ${kv('Frames missed', s.frames_missed)}
+      ${kv('Tracker', s.tracker)}
+      ${kv('Marker config', s.marker_config)}
+      ${kv('Processed at', s.processed_at)}
+    </div>`;
+
+  const links=[];
+  if(s.outputs?.csv)  links.push(`<a href="/api/runs/${encodeURIComponent(key)}/asset/csv">Angle CSV</a>`);
+  if(s.outputs?.plot) links.push(`<a href="/api/runs/${encodeURIComponent(key)}/asset/plot">Plot PNG</a>`);
+  if(s.outputs?.clip) links.push(`<a href="/api/runs/${encodeURIComponent(key)}/asset/clip">Best clip</a>`);
+  if(links.length) html += `<div class="dsec"><h3>Downloads</h3><div class="dl">${links.join('')}</div></div>`;
+
+  $('d-body').innerHTML = html;
+  if(series && series.data.length>1) drawRunChart(series);
+}
+
+function drawRunChart(series){
+  const c=$('dchart'); if(!c) return;
+  const rect=c.getBoundingClientRect(), dpr=window.devicePixelRatio||1;
+  c.width=Math.round(rect.width*dpr); c.height=Math.round(200*dpr);
+  const g=c.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
+  const W=rect.width,H=200,pad={l:52,r:12,t:14,b:24};
+
+  // Rolling RPM from the unwrapped angle, same 5s window as the master plot.
+  const d=series.data, WIN=5.0, pts=[];
+  for(let i=0;i<d.length;i++){
+    const t=d[i][0];
+    let j=i; while(j>0 && t-d[j][0] < WIN) j--;
+    const dt=t-d[j][0];
+    if(dt<WIN*0.5 || j===i) continue;
+    pts.push([t, ((d[i][2]-d[j][2])/dt)/6.0]);
+  }
+  if(pts.length<2) return;
+
+  const t0=pts[0][0], t1=pts[pts.length-1][0];
+  const vs=pts.map(p=>p[1]);
+  let lo=Math.min(0,...vs), hi=Math.max(0,...vs);
+  const sp=Math.max(hi-lo,0.05); lo-=sp*0.12; hi+=sp*0.12;
+  const X=t=>pad.l+((t-t0)/(t1-t0||1))*(W-pad.l-pad.r);
+  const Y=v=>pad.t+(1-(v-lo)/(hi-lo))*(H-pad.t-pad.b);
+
+  g.strokeStyle='rgba(45,124,181,.1)'; g.fillStyle='rgba(0,0,0,.34)';
+  g.font='9px Verdana'; g.textAlign='right'; g.lineWidth=1;
+  for(let i=0;i<=4;i++){
+    const v=lo+(hi-lo)*i/4,y=Y(v);
+    g.beginPath(); g.moveTo(pad.l,y); g.lineTo(W-pad.r,y); g.stroke();
+    g.fillText(v.toFixed(2), pad.l-7, y+3);
+  }
+  g.textAlign='center';
+  for(let i=0;i<=4;i++){
+    const t=t0+(t1-t0)*i/4;
+    g.fillText(t<120?`${t.toFixed(0)}s`:`${(t/60).toFixed(0)}m`, X(t), H-8);
+  }
+  if(lo<0&&hi>0){
+    g.strokeStyle='rgba(0,0,0,.2)';
+    g.beginPath(); g.moveTo(pad.l,Y(0)); g.lineTo(W-pad.r,Y(0)); g.stroke();
+  }
+  g.beginPath();
+  pts.forEach((p,i)=> i?g.lineTo(X(p[0]),Y(p[1])):g.moveTo(X(p[0]),Y(p[1])));
+  g.strokeStyle='#2d7cb5'; g.lineWidth=1.5; g.lineJoin='round'; g.stroke();
+  g.fillStyle='rgba(0,0,0,.34)'; g.textAlign='left'; g.font='9px Verdana';
+  g.fillText('RPM (5s rolling)', pad.l, 10);
+}
+
+function closeDrawer(){
+  $('scrim').classList.remove('open');
+  $('drawer').classList.remove('open');
+  selected=null; render();
+}
+$('d-close').onclick = closeDrawer;
+$('scrim').onclick = closeDrawer;
+document.addEventListener('keydown', e => { if(e.key==='Escape') closeDrawer(); });
+</script>
+</body>
+</html>

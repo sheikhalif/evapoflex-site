@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Evapoflex — Evaporation Engine</title>
+<link rel="icon" type="image/png" href="./assets/images/favicon.png">
+<link rel="apple-touch-icon" href="./assets/images/favicon.png">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{font-family:Verdana,Geneva,sans-serif;color:#1a1e2a;background:#f5f4f0;overflow-x:hidden;-webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:Verdana,Geneva,sans-serif;font-weight:400}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:#f5f4f0}::-webkit-scrollbar-thumb{background:rgba(45,124,181,0.3);border-radius:3px}
+
+.nz{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:0.035;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+
+/* Nav */
+.nv{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:18px 48px;background:transparent;transition:all .4s cubic-bezier(.16,1,.3,1)}
+.nv.sc{padding:12px 48px;background:rgba(245,244,240,0.92);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-bottom:1px solid rgba(45,124,181,0.12);box-shadow:0 1px 40px rgba(0,0,0,0.06)}
+.nv-logo{display:flex;align-items:center;gap:8px;cursor:pointer;text-decoration:none;font-weight:600;font-size:18px;color:#2d7cb5;letter-spacing:-0.02em}
+.nv-links{display:flex;gap:36px}
+.nv-link{font-size:12px;font-weight:500;letter-spacing:0.05em;text-transform:uppercase;color:rgba(0,0,0,0.45);cursor:pointer;transition:color .3s;background:none;border:none;font-family:inherit;text-decoration:none}
+.nv-link:hover{color:#2d7cb5}
+
+/* Hero */
+.hero{height:250vh;position:relative}
+.hero-sticky{position:sticky;top:0;height:100vh;overflow:hidden}
+#hero-canvas{position:absolute;inset:0;width:100%!important;height:100%!important;display:block;filter:invert(1)}
+.hero-glow{position:absolute;top:40%;left:50%;width:1000px;height:1000px;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(45,124,181,0.08) 0%,transparent 55%);pointer-events:none}
+.hero-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;padding-bottom:80px;pointer-events:none;background:linear-gradient(180deg,transparent 30%,rgba(245,244,240,0.6) 80%,rgba(245,244,240,0.95) 100%)}
+.hero-overlay>*{pointer-events:auto}
+.tag{font-size:56px;font-weight:300;line-height:1.05;color:#1a1e2a;text-align:center;opacity:0;transform:translateY(24px);animation:fu .8s .3s cubic-bezier(.16,1,.3,1) forwards}
+.sub-tag{font-size:17px;font-weight:300;color:rgba(0,0,0,0.45);margin-top:14px;text-align:center;opacity:0;transform:translateY(20px);animation:fu .8s .6s cubic-bezier(.16,1,.3,1) forwards}
+.cta-row{display:flex;gap:16px;margin-top:32px;opacity:0;transform:translateY(16px);animation:fu .8s .9s cubic-bezier(.16,1,.3,1) forwards}
+.btn-p,.btn-g{text-decoration:none}
+.btn-p{padding:14px 40px;font-size:12px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;background:#2d7cb5;color:#fff;border:none;border-radius:60px;cursor:pointer;transition:all .3s;font-family:Verdana,Geneva,sans-serif}
+.btn-p:hover{background:#4a9fd4;transform:translateY(-1px);box-shadow:0 8px 40px rgba(45,124,181,0.3)}
+.btn-g{padding:14px 40px;font-size:12px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;background:transparent;color:#2d7cb5;border:1.5px solid rgba(45,124,181,0.3);border-radius:60px;cursor:pointer;transition:all .3s;font-family:Verdana,Geneva,sans-serif}
+.btn-g:hover{border-color:#2d7cb5;color:#2d7cb5}
+
+/* Live-rig call to action. The dot only pulses when the rig is actually
+   streaming - a always-on "live" light that lies is worse than none. */
+.btn-live{display:inline-flex;align-items:center;gap:10px;position:relative}
+.live-dot{width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.45);
+          flex:none;transition:background .4s}
+.btn-live.on .live-dot{background:#fff;box-shadow:0 0 0 0 rgba(255,255,255,0.7);
+                       animation:pulse 2s infinite}
+@keyframes pulse{
+  0%{box-shadow:0 0 0 0 rgba(255,255,255,0.65)}
+  70%{box-shadow:0 0 0 9px rgba(255,255,255,0)}
+  100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}
+}
+.tag-new{font-size:9px;font-weight:700;letter-spacing:0.1em;padding:3px 7px;
+         border-radius:20px;background:#fff;color:#2d7cb5;line-height:1}
+@media(prefers-reduced-motion:reduce){.btn-live.on .live-dot{animation:none}}
+
+/* Shared */
+.dv{width:100%;max-width:1200px;margin:0 auto;height:1px;background:linear-gradient(90deg,transparent,rgba(45,124,181,0.15),transparent)}
+.sec{padding:100px 48px;position:relative}
+.sec-label{font-size:10px;font-weight:600;letter-spacing:0.2em;text-transform:uppercase;color:#2d7cb5;margin-bottom:14px}
+.sec-title{font-size:34px;line-height:1.1;margin-bottom:16px;max-width:600px;color:#1a1e2a}
+.sec-desc{font-size:16px;font-weight:300;color:rgba(0,0,0,0.45);line-height:1.7;max-width:500px}
+.rv{opacity:0;transform:translateY(28px);transition:opacity .8s cubic-bezier(.16,1,.3,1),transform .8s cubic-bezier(.16,1,.3,1)}
+.rv.vi{opacity:1;transform:translateY(0)}
+
+/* Gallery */
+.gal{background:#eeeee8;overflow:hidden;padding-top:100px;padding-bottom:80px}
+.gal-header{max-width:1200px;margin:0 auto;padding:0 48px;margin-bottom:48px}
+.gal-track-wrap{position:relative;width:100%;overflow:hidden}
+.gal-track{display:flex;gap:16px;animation:galScroll 35s linear infinite;width:max-content}
+.gal-track:hover{animation-play-state:paused}
+.gal-img{width:560px;height:380px;border-radius:12px;overflow:hidden;flex-shrink:0;position:relative;cursor:pointer}
+.gal-img img{width:100%;height:100%;object-fit:cover;transition:transform .6s cubic-bezier(.16,1,.3,1)}
+.gal-img:hover img{transform:scale(1.04)}
+.gal-img .ov{position:absolute;inset:0;background:linear-gradient(180deg,transparent 50%,rgba(0,0,0,0.7));opacity:0;transition:opacity .4s;display:flex;align-items:flex-end;padding:24px}
+.gal-img:hover .ov{opacity:1}
+.gal-img .ov span{color:#fff;font-size:14px;font-weight:500}
+@keyframes galScroll{0%{transform:translateX(0)}100%{transform:translateX(calc(-560px * 5 - 16px * 5))}}
+
+/* Lightbox */
+.lb{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.95);backdrop-filter:blur(20px);display:flex;align-items:center;justify-content:center;animation:fi .3s ease}
+.lb-close{position:absolute;top:28px;right:28px;width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);color:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.lb-close:hover{background:rgba(255,255,255,0.12)}
+.lb-nav{position:absolute;top:50%;transform:translateY(-50%);width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);color:#fff;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.lb-nav:hover{background:rgba(255,255,255,0.12)}
+.lb-prev{left:24px}.lb-next{right:24px}
+.lb-img{max-width:85vw;max-height:85vh;object-fit:contain;border-radius:6px;transition:opacity 0.25s ease}
+.lb-img.fading{opacity:0}
+
+/* How It Works */
+.hiw{background:linear-gradient(180deg,#f5f4f0,#efeeea)}
+.hiw-c{max-width:1200px;margin:0 auto}
+.hiw-grid{display:grid;grid-template-columns:1fr 1fr;gap:48px;margin-top:56px;align-items:stretch}
+.hiw-vis{border-radius:20px;background:#e3dfd7;border:1px solid rgba(45,124,181,0.12);overflow:hidden;box-shadow:0 20px 80px rgba(0,0,0,0.08);display:flex;min-height:480px}
+#hiw-canvas{width:100%!important;height:100%!important;display:block;min-height:0;filter:invert(1)}
+.hiw-comps{display:flex;flex-direction:column;gap:14px}
+.comp-card{padding:24px;border-radius:14px;background:rgba(0,0,0,0.02);border:1px solid rgba(0,0,0,0.06);transition:all .4s cubic-bezier(.16,1,.3,1);cursor:pointer;flex:1;display:flex;flex-direction:column;justify-content:center}
+.comp-card:hover,.comp-card.act{border-color:rgba(45,124,181,0.3);background:rgba(45,124,181,0.06);box-shadow:0 8px 40px rgba(45,124,181,0.1)}
+.comp-icon{width:36px;height:36px;border-radius:10px;background:rgba(45,124,181,0.1);color:#2d7cb5;display:flex;align-items:center;justify-content:center;font-size:16px;margin-bottom:12px}
+.comp-card h3{font-size:21px;margin-bottom:6px;color:#1a1e2a}
+.comp-card p{font-size:13px;font-weight:300;color:rgba(0,0,0,0.45);line-height:1.6}
+
+/* Configurator */
+.cfg{background:#eeeee8}
+.cfg-c{max-width:1240px;margin:0 auto}
+.cfg-hdr{text-align:center;margin-bottom:36px}
+.cfg-hdr .sec-title,.cfg-hdr .sec-desc{margin:0 auto}
+.cfg-layout{display:flex;gap:14px;height:640px;align-items:stretch}
+.cfg-panel{width:370px;flex-shrink:0;overflow-y:auto;overflow-x:visible;display:flex;flex-direction:column;gap:8px;padding-right:4px;height:100%}
+.cfg-card{background:rgba(255,255,255,0.6);border-radius:10px;padding:12px 18px;border:1px solid rgba(0,0,0,0.06);overflow:visible;position:relative}
+.cfg-sec-t{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:6px}
+.cfg-row{display:flex;align-items:center;gap:4px;height:28px}
+.cfg-lbl{width:108px;font-size:11px;color:rgba(0,0,0,0.5);flex-shrink:0;display:flex;align-items:center;gap:5px;font-family:Verdana,Geneva,sans-serif}
+.cfg-info{width:14px;height:14px;border-radius:50%;border:1px solid rgba(0,0,0,0.15);display:inline-flex;align-items:center;justify-content:center;font-size:8px;font-style:normal;color:rgba(0,0,0,0.3);cursor:help;position:relative;flex-shrink:0}
+.cfg-info:hover .cfg-tip{display:block}
+.cfg-tip{display:none;position:absolute;bottom:auto;top:50%;left:calc(100% + 10px);transform:translateY(-50%);width:200px;padding:10px 12px;background:#fff;color:rgba(0,0,0,0.7);font-size:11px;line-height:1.45;border-radius:8px;border:1px solid rgba(0,0,0,0.08);z-index:200;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,0.1);font-family:Verdana,Geneva,sans-serif;font-style:normal;white-space:normal}
+.cfg-row input[type=range]{flex:1;height:3px;accent-color:#2d7cb5;cursor:pointer;background:rgba(45,124,181,0.12);border-radius:2px;-webkit-appearance:none;appearance:none}
+.cfg-row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:#2d7cb5;cursor:pointer;border:2px solid #f5f4f0}
+.cfg-row input[type=number]{width:58px;height:24px;background:rgba(255,255,255,0.7);border:1px solid rgba(0,0,0,0.1);border-radius:5px;padding:0 6px;font-size:11px;font-family:Verdana,Geneva,sans-serif;color:#1a1e2a;text-align:right}
+.cfg-row input[type=number]:focus{outline:none;border-color:rgba(45,124,181,0.4)}
+.cfg-unit{width:22px;font-size:10px;color:rgba(0,0,0,0.35);font-family:Verdana,Geneva,sans-serif}
+.cfg-plots{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0}
+.cfg-plot-card{flex:1;background:rgba(255,255,255,0.6);border-radius:10px;border:1px solid rgba(0,0,0,0.06);padding:6px;display:flex;flex-direction:column;min-height:0}
+.cfg-plot-card svg{display:block;flex:1;min-height:0}
+.cfg-stats{height:56px;background:rgba(255,255,255,0.6);border-radius:10px;border:1px solid rgba(0,0,0,0.06);padding:8px 18px;display:flex;align-items:center;gap:16px;flex-shrink:0;overflow-x:auto}
+.cfg-stat-label{font-size:8px;color:rgba(0,0,0,0.35);text-transform:uppercase;letter-spacing:.5px;font-family:Verdana,Geneva,sans-serif}
+.cfg-stat-val{font-size:14px;font-weight:700;font-family:Verdana,Geneva,sans-serif;line-height:1.2}
+.cfg-stat-unit{font-size:9px;font-weight:400;color:rgba(0,0,0,0.3);margin-left:2px;font-family:Verdana,Geneva,sans-serif}
+.cfg-stat-div{width:1px;align-self:stretch;background:rgba(0,0,0,0.08);flex-shrink:0}
+.cfg-preset{padding:5px 18px;border-radius:6px;font-size:11px;font-weight:600;border:none;cursor:pointer;transition:all .15s;font-family:Verdana,Geneva,sans-serif}
+.cfg-preset.off{background:rgba(0,0,0,0.04);color:rgba(0,0,0,0.4)}
+.cfg-preset.on{background:rgba(45,124,181,0.25);color:#2d7cb5}
+
+/* About */
+/* Live rig */
+.rig{background:#eeeee8;text-align:center}
+.rig-c{max-width:820px;margin:0 auto}
+.rig-stats{display:flex;justify-content:center;gap:56px;flex-wrap:wrap;margin-bottom:38px}
+.rig-stat{min-width:150px}
+.rs-v{font-size:24px;font-weight:300;color:#2d7cb5;line-height:1.2;margin-bottom:6px}
+.rs-k{font-size:10px;font-weight:600;letter-spacing:0.16em;text-transform:uppercase;
+      color:rgba(0,0,0,0.38)}
+.rig-note{font-size:12px;color:rgba(0,0,0,0.35);margin-top:26px}
+@media(max-width:640px){.rig-stats{gap:28px}}
+
+.abt{background:linear-gradient(180deg,#f5f4f0,#efeeea)}
+.abt-c{max-width:1000px;margin:0 auto}
+.abt-mission{text-align:center;margin-bottom:72px;max-width:600px;margin-left:auto;margin-right:auto}
+.abt-mission p{font-size:16px;font-weight:300;color:rgba(0,0,0,0.45);line-height:1.75;margin-top:18px}
+.tm-label{font-size:10px;font-weight:600;letter-spacing:0.15em;text-transform:uppercase;color:rgba(0,0,0,0.25);margin-bottom:24px}
+.pi-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:40px}
+.tm-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.p-card{padding:28px;border-radius:14px;background:rgba(0,0,0,0.02);border:1px solid rgba(0,0,0,0.06);transition:all .3s}
+.p-card:hover{border-color:rgba(45,124,181,0.2);box-shadow:0 8px 30px rgba(0,0,0,0.06)}
+.p-photo{width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,rgba(45,124,181,0.1),rgba(45,124,181,0.18));display:flex;align-items:center;justify-content:center;margin-bottom:16px}
+.p-photo span{font-family:'Cormorant Garamond',serif;font-size:20px;color:#2d7cb5;opacity:0.6}
+.p-card h3{font-size:18px;margin-bottom:3px;color:#1a1e2a}
+.p-role{font-size:12px;font-weight:500;color:#2d7cb5;margin-bottom:10px}
+.p-bio{font-size:13px;font-weight:300;color:rgba(0,0,0,0.4);line-height:1.6}
+
+.ft{padding:48px 48px 32px;background:#eeeee8;border-top:1px solid rgba(0,0,0,0.06);text-align:center}
+.ft-logo{display:flex;align-items:center;justify-content:center;gap:8px;font-weight:600;font-size:15px;color:#2d7cb5;margin-bottom:12px}
+.ft p{font-size:12px;color:rgba(0,0,0,0.3)}
+
+@keyframes fu{to{opacity:1;transform:translateY(0)}}
+@keyframes fi{from{opacity:0}to{opacity:1}}
+
+/* Floating archive button — appears after scrolling past hero */
+.fab{position:fixed;bottom:28px;right:28px;z-index:90;padding:14px 24px;background:#2d7cb5;color:#fff;border-radius:60px;font-family:Verdana,Geneva,sans-serif;font-size:11px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;text-decoration:none;box-shadow:0 8px 30px rgba(45,124,181,0.35),0 2px 6px rgba(0,0,0,0.08);display:flex;align-items:center;gap:12px;opacity:0;transform:translateY(20px) scale(0.95);transition:opacity .4s cubic-bezier(.16,1,.3,1),transform .4s cubic-bezier(.16,1,.3,1),background .25s;pointer-events:none}
+.fab.show{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
+.fab:hover{background:#4a9fd4;box-shadow:0 12px 40px rgba(45,124,181,0.45),0 2px 6px rgba(0,0,0,0.1)}
+.fab-ico{width:18px;height:18px;display:flex;align-items:center;justify-content:center}
+.fab-ico svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+@media(max-width:900px){.nv{padding:14px 20px}.nv-links{display:none}.tag{font-size:38px}.sec{padding:60px 20px}.sec-title{font-size:30px}.gal-img{width:340px;height:230px}.hiw-grid{grid-template-columns:1fr;gap:32px}.cfg-layout{flex-direction:column;height:auto}.cfg-panel{width:100%}.pi-grid{grid-template-columns:1fr}.tm-grid{grid-template-columns:1fr 1fr}.fab{bottom:18px;right:18px;padding:12px 18px;font-size:10px}}
+</style>
+</head>
+<body>
+<div class="nz"></div>
+
+<nav class="nv" id="nav">
+  <a class="nv-logo" onclick="window.scrollTo({top:0,behavior:'smooth'})">evapoflex</a>
+  <div class="nv-links">
+    <a class="nv-link" href="#how-it-works">How It Works</a>
+    <a class="nv-link" href="#configurator">Configurator</a>
+    <a class="nv-link" href="#gallery">Gallery</a>
+    <a class="nv-link" href="./live.html">Live Rig</a>
+    <a class="nv-link" href="#about">Team</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-sticky">
+    <canvas id="hero-canvas"></canvas>
+    <div class="hero-glow"></div>
+    <div class="hero-overlay">
+      <h1 class="tag">Evaporation Engine</h1>
+      <p class="sub-tag">Harvesting clean energy from the air around us</p>
+      <div class="cta-row">
+        <a class="btn-p btn-live" id="live-cta"
+           href="https://rig.evaporationengine.net/live.html">
+          <span class="live-dot"></span>Live Feed<span class="tag-new">New</span>
+        </a>
+        <a class="btn-g" href="./archive.html">View Models</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="dv"></div>
+
+<section id="how-it-works" class="sec hiw">
+  <div class="hiw-c">
+    <div class="rv" id="hiw-h" style="text-align:center"><div class="sec-label">How It Works</div><h2 class="sec-title" style="margin:0 auto 16px">Three Systems, One Engine</h2><p class="sec-desc" style="margin:0 auto">Structural precision, bio-inspired actuation, and ultra-low-friction rotation, combined into a single elegant system.</p></div>
+    <div class="hiw-grid">
+      <div class="hiw-vis"><canvas id="hiw-canvas"></canvas></div>
+      <div class="hiw-comps" id="comp-cards"></div>
+    </div>
+  </div>
+</section>
+
+<div class="dv"></div>
+
+<section id="configurator" class="sec cfg">
+  <div class="cfg-c">
+    <div class="cfg-hdr rv" id="cfg-h"><div class="sec-label">Configurator</div><h2 class="sec-title">Thermodynamic Cycle Explorer</h2><p class="sec-desc">Adjust parameters to explore the engine's stress-strain cycle and performance in real time.</p></div>
+    <div class="rv" id="cfg-body"><div class="cfg-layout"><div class="cfg-panel" id="cfg-panel"></div><div class="cfg-plots" id="cfg-plots"></div></div></div>
+  </div>
+</section>
+
+<div class="dv"></div>
+
+<section id="gallery" class="gal">
+  <div class="gal-header rv" id="gal-h" style="text-align:center"><div class="sec-label">Gallery</div><h2 class="sec-title" style="margin:0 auto 16px">Engineered Transparency</h2><p class="sec-desc" style="margin:0 auto">The working prototype, up close.</p></div>
+  <div class="gal-track-wrap"><div class="gal-track" id="gal-track"></div></div>
+  <div class="rv" style="text-align:center;margin-top:56px"><a class="btn-p" href="./archive.html" style="display:inline-flex;align-items:center;gap:10px">Explore the 3D archive<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></svg></a></div>
+</section>
+
+<div class="dv"></div>
+
+<section id="live" class="sec rig">
+  <div class="rig-c rv" id="rig-h">
+    <div class="sec-label">Live Rig</div>
+    <h2 class="sec-title" style="margin:0 auto 16px">The Wheel Is Turning Right Now</h2>
+    <p class="sec-desc" style="margin:0 auto 34px">A test wheel runs continuously in the lab under a
+      camera that tracks every rotation. The feed and its statistics are live, and every test we have
+      ever run is archived alongside them.</p>
+    <div class="rig-stats">
+      <div class="rig-stat"><div class="rs-v">24/7</div><div class="rs-k">Continuous capture</div></div>
+      <div class="rig-stat"><div class="rs-v">Frame&nbsp;by&nbsp;frame</div><div class="rs-k">Rotation tracking</div></div>
+      <div class="rig-stat"><div class="rs-v">Every&nbsp;run</div><div class="rs-k">Archived with stats</div></div>
+    </div>
+    <div class="cta-row" style="justify-content:center;animation:none;opacity:1;transform:none">
+      <a class="btn-p" href="./live.html" style="display:inline-flex;align-items:center;gap:10px">
+        View the live rig
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/></svg>
+      </a>
+      <a class="btn-g" href="./runs.html">Browse test runs</a>
+    </div>
+    <p class="rig-note">Sign-in required — the rig feed and test data are private to the project team.</p>
+  </div>
+</section>
+
+<div class="dv"></div>
+
+<section id="about" class="sec abt">
+  <div class="abt-c">
+    <div class="abt-mission rv" id="abt-h"><div class="sec-label">About Us</div><h2 class="sec-title" style="margin:0 auto 16px">The City College of New York</h2><p>The EvapoFlex project team combines expertise in water-responsive biomaterials, evaporation energy harvesting, and building systems integration.</p></div>
+    <div class="rv" id="abt-pi"><div class="tm-label">Principal Investigators</div><div class="pi-grid">
+      <div class="p-card"><div class="p-photo"><span>XC</span></div><h3>Dr. Xi Chen</h3><div class="p-role">PI · Dept. of Chemical Engineering, CCNY</div></div>
+      <div class="p-card"><div class="p-photo"><span>AA</span></div><h3>Dr. Ahu Aydogan</h3><div class="p-role">Co-PI · Spitzer School of Architecture, CCNY</div></div>
+    </div></div>
+    <div class="rv" id="abt-tm"><div class="tm-label">Research Team</div><div class="tm-grid">
+      <div class="p-card"><div class="p-photo"><span>SA</span></div><h3>Sheikh Alif</h3><div class="p-role">Chemical Engineering</div></div>
+      <div class="p-card"><div class="p-photo"><span>MR</span></div><h3>Michael Monsalve-Ramirez</h3><div class="p-role">Architecture</div></div>
+      <div class="p-card"><div class="p-photo"><span>GT</span></div><h3>Georgina Tobon-Hernandez</h3><div class="p-role">Chemical Engineering</div></div>
+    </div></div>
+  </div>
+</section>
+
+<a class="fab" id="fab" href="./archive.html" aria-label="Open 3D archive">
+  <span class="fab-ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a13 13 0 0 1 0 18 13 13 0 0 1 0-18"/></svg></span>
+  <span>3D Archive</span>
+</a>
+
+<footer class="ft"><div class="ft-logo">evapoflex</div><p>© 2026 Evapoflex · The City College of New York · New York, NY</p></footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+// ═══ THREE.JS SCENE with GLB MODEL ═══
+var threeOK=false,hero={group:{rotation:{x:0,y:0}},r:{render:function(){}}},hiw={group:{rotation:{y:0}},cam:{position:{x:4,y:3,z:4},lookAt:function(){}},parts:{},r:{render:function(){}}};
+var origM={};
+var hiMat=null;
+try{
+if(typeof THREE!=='undefined'&&typeof THREE.GLTFLoader!=='undefined'){
+threeOK=true;
+
+hiMat=new THREE.MeshPhysicalMaterial({color:0xA5602B,transparent:true,opacity:0.45,roughness:0.08,metalness:0.3,emissive:0xA5602B,emissiveIntensity:0.35,side:THREE.DoubleSide});
+
+// Part name → component group mapping
+const PART_MAP={
+  'EED07_Frame':'frame',
+  'EED07_Cellophane_Trimmed':'springMass','EED07_Clips':'springMass','EED07_Short_Springs':'springMass',
+  'EED07_Bearings':'bearingAssembly','EED07_Shaft_Elements':'bearingAssembly'
+};
+
+function mkScene(canvas,isHero,bgColor){
+  const w=canvas.clientWidth||window.innerWidth,h=canvas.clientHeight||window.innerHeight;
+  const r=new THREE.WebGLRenderer({canvas,antialias:true});
+  r.setSize(w,h);r.setPixelRatio(Math.min(devicePixelRatio,2));
+  r.toneMapping=THREE.ACESFilmicToneMapping;r.toneMappingExposure=1.6;
+  r.setClearColor(bgColor,1);
+  const sc=new THREE.Scene();
+  sc.background=new THREE.Color(bgColor);
+  const cam=new THREE.PerspectiveCamera(isHero?28:32,w/h,.1,1000);
+  cam.position.set(400,300,400);cam.lookAt(0,0,0);
+  // Lighting
+  sc.add(new THREE.AmbientLight(0x889aac,0.7));
+  const d1=new THREE.DirectionalLight(0xffffff,1.0);d1.position.set(500,800,500);sc.add(d1);
+  const d2=new THREE.DirectionalLight(0x99bbdd,0.5);d2.position.set(-400,300,-300);sc.add(d2);
+  // Bright specular light from above-front for glossy reflections
+  const spec=new THREE.DirectionalLight(0xffffff,0.6);spec.position.set(200,600,400);sc.add(spec);
+  // Rim lights
+  const rim1=new THREE.DirectionalLight(0x5599cc,0.5);rim1.position.set(0,-200,-500);sc.add(rim1);
+  const rim2=new THREE.DirectionalLight(0x4488bb,0.4);rim2.position.set(-500,100,200);sc.add(rim2);
+  const rim3=new THREE.DirectionalLight(0x5588aa,0.3);rim3.position.set(500,-100,300);sc.add(rim3);
+  // Point lights for metal specular
+  const pt1=new THREE.PointLight(0xffffff,0.4,1500);pt1.position.set(100,400,200);sc.add(pt1);
+  const pt2=new THREE.PointLight(0x88aacc,0.3,1500);pt2.position.set(-200,300,-100);sc.add(pt2);
+  const group=new THREE.Group();
+  const parts={frame:new THREE.Group(),springMass:new THREE.Group(),bearingAssembly:new THREE.Group()};
+  sc.add(group);
+  return{r,sc,cam,group,parts};
+}
+
+var heroC=document.getElementById('hero-canvas');hero=mkScene(heroC,true,0x1a1e24);
+var hiwC=document.getElementById('hiw-canvas');hiw=mkScene(hiwC,false,0x1c2028);
+
+// Load GLB model into a scene
+function loadModel(scene,callback){
+  const loader=new THREE.GLTFLoader();
+  loader.load('assets/models/eed07.glb',function(gltf){
+    const model=gltf.scene;
+    // Center model
+    const box=new THREE.Box3().setFromObject(model);
+    const center=box.getCenter(new THREE.Vector3());
+    model.position.sub(center);
+    // Enhance materials per part for dark bg
+    model.traverse(function(child){
+      if(child.isMesh){
+        child.material=child.material.clone();
+        child.userData.origMat=child.material;
+        var n=child.name||'';
+        if(n==='EED07_Frame'||n==='EED07_Clips'){
+          // Acrylic - glossy glass with visible edges and reflections
+          child.material.color=new THREE.Color(0xd0e4f4);
+          child.material.transparent=true;
+          child.material.opacity=0.35;
+          child.material.emissive=new THREE.Color(0x3a6080);
+          child.material.emissiveIntensity=0.25;
+          child.material.roughness=0.0;
+          child.material.metalness=0.15;
+          child.material.side=THREE.DoubleSide;
+          child.material.depthWrite=true;
+        } else if(n==='EED07_Cellophane_Trimmed'){
+          // Cellophane - thin warm film, no z-fighting
+          child.material.color=new THREE.Color(0xccbb99);
+          child.material.transparent=true;
+          child.material.opacity=0.2;
+          child.material.emissive=new THREE.Color(0x2a2010);
+          child.material.emissiveIntensity=0.1;
+          child.material.roughness=0.2;
+          child.material.metalness=0.0;
+          child.material.side=THREE.FrontSide;
+          child.material.depthWrite=false;
+          child.material.polygonOffset=true;
+          child.material.polygonOffsetFactor=1;
+          child.material.polygonOffsetUnits=1;
+        } else if(n==='EED07_Bearings'){
+          // Chrome bearings - bright reflective
+          child.material.color=new THREE.Color(0xdddddd);
+          child.material.metalness=1.0;
+          child.material.roughness=0.1;
+          child.material.emissive=new THREE.Color(0x222222);
+          child.material.emissiveIntensity=0.1;
+        } else if(n==='EED07_Shaft_Elements'){
+          // Brushed steel shaft assembly
+          child.material.color=new THREE.Color(0xaaaaaa);
+          child.material.metalness=1.0;
+          child.material.roughness=0.3;
+          child.material.emissive=new THREE.Color(0x1a1a1a);
+          child.material.emissiveIntensity=0.1;
+        } else if(n.indexOf('Spring')>=0){
+          // Spring steel - polished
+          child.material.color=new THREE.Color(0xbbbbbb);
+          child.material.metalness=1.0;
+          child.material.roughness=0.15;
+          child.material.emissive=new THREE.Color(0x1a1a1a);
+          child.material.emissiveIntensity=0.1;
+        }
+      }
+    });
+    callback(model);
+  },undefined,function(err){
+    console.warn('GLB load failed, using fallback:',err);
+    callback(null);
+  });
+}
+
+// Load into hero
+loadModel(hero.sc,function(model){
+  if(model){
+    hero.group.add(model);
+    hero.group.rotation.x=0.15;
+    console.log('Hero model loaded');
+  }
+});
+
+// Load into HIW (clone)
+loadModel(hiw.sc,function(model){
+  if(!model)return;
+  hiw.group.add(model);
+  hiw.group.rotation.x=0.15;
+  // Map meshes to part groups
+  model.traverse(function(child){
+    if(child.isMesh){
+      const groupName=PART_MAP[child.name];
+      if(groupName){
+        if(!hiw.parts[groupName])hiw.parts[groupName]=new THREE.Group();
+        hiw.parts[groupName].userData=hiw.parts[groupName].userData||{meshes:[]};
+        hiw.parts[groupName].userData.meshes=hiw.parts[groupName].userData.meshes||[];
+        hiw.parts[groupName].userData.meshes.push(child);
+      }
+    }
+  });
+  // Build origM for highlighting
+  for(const[k,g]of Object.entries(hiw.parts)){
+    origM[k]=[];
+    if(g.userData&&g.userData.meshes){
+      g.userData.meshes.forEach(m=>{origM[k].push({m:m,mat:m.userData.origMat||m.material});});
+    }
+  }
+  // Make parts traversable for highlight
+  for(const[k,g]of Object.entries(hiw.parts)){
+    g.traverse=g.traverse||function(fn){if(g.userData&&g.userData.meshes)g.userData.meshes.forEach(fn);};
+  }
+  console.log('HIW model loaded, parts:',Object.keys(hiw.parts));
+});
+
+function fixSize(s,c){const w=c.clientWidth||c.parentElement.clientWidth,h=c.clientHeight||c.parentElement.clientHeight;if(w<1||h<1)return;s.r.setSize(w,h);s.cam.aspect=w/h;s.cam.updateProjectionMatrix();s.r.render(s.sc,s.cam);}
+setTimeout(()=>{fixSize(hero,heroC);fixSize(hiw,hiwC);},0);
+setTimeout(()=>{fixSize(hero,heroC);fixSize(hiw,hiwC);},100);
+setTimeout(()=>{fixSize(hero,heroC);fixSize(hiw,hiwC);},500);
+setTimeout(()=>{fixSize(hero,heroC);fixSize(hiw,hiwC);},1000);
+window.addEventListener('load',()=>{fixSize(hero,heroC);fixSize(hiw,hiwC);});
+if(window.ResizeObserver){const ro=new ResizeObserver(()=>{fixSize(hero,heroC);fixSize(hiw,hiwC);});ro.observe(heroC);ro.observe(hiwC);}
+window.addEventListener('resize',()=>{fixSize(hero,heroC);fixSize(hiw,hiwC);},{passive:true});
+
+}}catch(e){console.warn('Three.js failed:',e);}
+// ═══ END THREE.JS ═══
+
+// Gallery
+const IMGS=['assets/images/img1.jpg','assets/images/img2.jpg','assets/images/img3.jpg','assets/images/img4.jpg','assets/images/img5.jpg'];
+const LABELS=['Bearing Close-Up','Angled View','Side Profile','Enclosure Assembly','Enclosure Detail'];
+const galTrack=document.getElementById('gal-track');let lbIdx=-1;
+[...IMGS,...IMGS].forEach((img,i)=>{const idx=i%5;const d=document.createElement('div');d.className='gal-img';d.innerHTML=`<img src="${img}" alt="${LABELS[idx]}"><div class="ov"><span>${LABELS[idx]}</span></div>`;d.onclick=()=>{lbIdx=idx;showLB();};galTrack.appendChild(d);});
+function showLB(){
+  let lb=document.getElementById('lb');
+  if(lbIdx<0){if(lb)lb.remove();return;}
+  if(!lb){
+    lb=document.createElement('div');lb.id='lb';lb.className='lb';
+    lb.innerHTML=`<button class="lb-close">&times;</button><button class="lb-nav lb-prev">&lsaquo;</button><img class="lb-img" src="${IMGS[lbIdx]}"><button class="lb-nav lb-next">&rsaquo;</button>`;
+    lb.querySelector('.lb-close').onclick=()=>{lbIdx=-1;lb.remove();};
+    lb.querySelector('.lb-prev').onclick=e=>{e.stopPropagation();lbIdx=(lbIdx-1+5)%5;updateLBImg();};
+    lb.querySelector('.lb-next').onclick=e=>{e.stopPropagation();lbIdx=(lbIdx+1)%5;updateLBImg();};
+    lb.onclick=e=>{if(e.target===lb){lbIdx=-1;lb.remove();}};
+    document.body.appendChild(lb);
+  } else {updateLBImg();}
+}
+function updateLBImg(){
+  const lb=document.getElementById('lb');if(!lb)return;
+  const img=lb.querySelector('.lb-img');if(!img)return;
+  img.classList.add('fading');
+  setTimeout(()=>{img.src=IMGS[lbIdx];img.onload=()=>{img.classList.remove('fading');};},200);
+}
+
+// Components
+const COMPS=[
+  {key:'frame',name:'Frame',desc:'Laser-cut optical-grade acrylic integrating the outer rim, four radial spokes, and central hub into one transparent structural element.',icon:'&#9711;',cam:[400,250,400]},
+  {key:'springMass',name:'Spring-Mass System',desc:'Cellophane membranes generate cyclic strain through moisture absorption. Clips and springs convert that strain energy into rotational motion.',icon:'&#9678;',cam:[250,450,300]},
+  {key:'bearingAssembly',name:'Bearing Assembly',desc:'Dual sealed bearings on a precision stainless steel shaft achieve near-zero friction, enabling sustained rotation from minimal energy input.',icon:'&#8853;',cam:[80,40,120]},
+];
+var actComp=0,targetCam=COMPS[0].cam;
+const cc=document.getElementById('comp-cards');
+COMPS.forEach((c,i)=>{const d=document.createElement('div');d.className=`comp-card rv vi ${i===0?'act':''}`;d.innerHTML=`<div class="comp-icon">${c.icon}</div><h3>${c.name}</h3><p>${c.desc}</p>`;d.onmouseenter=d.onclick=()=>{actComp=i;targetCam=c.cam;document.querySelectorAll('.comp-card').forEach((el,j)=>el.classList.toggle('act',j===i));try{
+  // Reset all materials
+  for(const[k,ms]of Object.entries(origM))ms.forEach(({m,mat})=>{m.material=mat;});
+  // Highlight active group
+  const pg=hiw.parts[c.key];
+  if(pg&&pg.userData&&pg.userData.meshes){pg.userData.meshes.forEach(m=>{m.material=hiMat;});}
+}catch(e){}};cc.appendChild(d);});
+
+// ── Configurator ──
+const EED07={ambient:15,enclosure:65,start:0,end:180,stripLength:16.4,stripWidth:2,initPressure:7,springConst:400,clipMass:37,wheelDiam:50.9,nArms:8,tauWet:149.2,tauDry:78.56,thickness:20.8,fricMass:0.1};
+const EED08={ambient:15,enclosure:65,start:0,end:180,stripLength:16.6,stripWidth:2,initPressure:5,springConst:397,clipMass:47,wheelDiam:50.9,nArms:8,tauWet:149.2,tauDry:78.56,thickness:20.8,fricMass:0.1};
+const PRESETS=[{n:'EED08',v:EED08},{n:'EED07',v:EED07}];
+let inp={...EED08};
+
+function clipL(m,b){const pts=[];if(b>=-1e-9&&b<=3+1e-9)pts.push([0,Math.max(0,Math.min(3,b))]);if(Math.abs(m)>1e-15){const x=-b/m;if(x>=-1e-9&&x<=10+1e-9)pts.push([Math.max(0,x),0]);}const d=m+.3;if(Math.abs(d)>1e-12){const xm=(3-b)/d,ym=3-.3*xm;if(xm>=-1e-9&&xm<=10+1e-9&&ym>=-1e-9&&ym<=3+1e-9)pts.push([Math.max(0,xm),Math.max(0,ym)]);}const u=[];for(const p of pts)if(!u.some(q=>Math.abs(q[0]-p[0])<.002&&Math.abs(q[1]-p[1])<.002))u.push(p);if(u.length<2)return null;const ins=u.filter(([x,y])=>x>=-.01&&y>=-.01&&y<=3-.3*x+.05);if(ins.length<2)return null;ins.sort((a,b)=>a[0]-b[0]);return[ins[0],ins[ins.length-1]];}
+function ix(m1,b1,m2,b2){const d=m1-m2;if(Math.abs(d)<1e-15)return null;const x=(b2-b1)/d;return[x,m1*x+b1];}
+function pA(pts){let a=0;for(let i=0;i<pts.length;i++){const j=(i+1)%pts.length;a+=pts[i][0]*pts[j][1]-pts[j][0]*pts[i][1];}return Math.abs(a)/2;}
+function compute(i){const Ri=.01*i.ambient,Rf=.01*i.enclosure,ei=(Math.PI/180)*i.start,ef=(Math.PI/180)*i.end,Lc=.01*i.stripLength,Wc=.01*i.stripWidth,Tc=i.thickness*1e-6,P0=i.initPressure,k=i.springConst,mc=.001*i.clipMass,Nm=i.nArms,tw=i.tauWet,td=i.tauDry,Rw=.01*i.wheelDiam/2,mF=.001*i.fricMass,g=9.81,tauK=mF*g*Rw,e0=3*Ri-.3*Ri*P0,Lc0=Lc/(1+e0/100||1e-15),Ax=Wc*Tc,ss=(Lc0*k)===0?1e15:1e8*Ax/(Lc0*k),off=Ax===0?0:mc*g*(Math.cos(ei)-Math.cos(ef))/Ax/1e6;const L1={m:-.3*Ri,b:3*Ri},L2={m:-.3*Rf,b:3*Rf},L3={m:-ss,b:e0+ss*P0},L4={m:-ss,b:e0+ss*(P0-off)};const c1=clipL(L1.m,L1.b),c2=clipL(L2.m,L2.b),c3=clipL(L3.m,L3.b),c4=clipL(L4.m,L4.b),P1=ix(L1.m,L1.b,L3.m,L3.b),P2=ix(L2.m,L2.b,L3.m,L3.b),P3=ix(L2.m,L2.b,L4.m,L4.b),P4=ix(L1.m,L1.b,L4.m,L4.b);let poly=null,area=0;if(P1&&P2&&P3&&P4){poly=[P1,P2,P3,P4];area=pA(poly);}const Ed=area*1e4,Et=Ed*Lc*Wc*Tc*Nm,wS=((i.end-i.start+360)%360)*Math.PI/180,dS=2*Math.PI-wS,sweep=[];let ssRPM=null,maxP=0,maxPr=0;
+const mt0Calc=()=>{if(sweep.length<1)return 0;return sweep[0].tau;};
+for(let r=.002;r<=5;r+=.002){const om=r*2*Math.PI/60,ew=1-Math.exp(-wS/om/Math.max(.01,tw)),ed=1-Math.exp(-dS/om/Math.max(.01,td)),f=ew*ed,Wr=Et*f,tau=Wr/(2*Math.PI),P=tau*om;sweep.push({rpm:r,tau,P,frac:f});if(P>maxP){maxP=P;maxPr=r;}if(ssRPM===null&&tau<tauK&&sweep.length>1){const p=sweep[sweep.length-2];ssRPM=p.rpm+(tauK-p.tau)/(tau-p.tau)*(r-p.rpm);}}
+const mt0=sweep.length?sweep[0].tau:0;const mfm=Rw>0?(mt0/(9.81*Rw))*1000:999;
+let ePoly=null,sFrac=1;if(ssRPM&&ssRPM>0&&poly){const om=ssRPM*2*Math.PI/60;sFrac=(1-Math.exp(-wS/om/Math.max(.01,tw)))*(1-Math.exp(-dS/om/Math.max(.01,td)));const cx=poly.reduce((s,p)=>s+p[0],0)/4,cy=poly.reduce((s,p)=>s+p[1],0)/4,sc=Math.sqrt(sFrac);ePoly=poly.map(p=>[cx+(p[0]-cx)*sc,cy+(p[1]-cy)*sc]);}return{L1,L2,L3,L4,c1,c2,c3,c4,P1,P2,P3,P4,poly,area,Et,sweep,ssRPM,maxPr,maxP,sFrac,ePoly,tauK,mfm,ssPower:ssRPM?(tauK*ssRPM*2*Math.PI/60):0};}
+const fmtE=j=>j<1e-6?(j*1e9).toFixed(1)+" nJ":j<1e-3?(j*1e6).toFixed(2)+" μJ":(j*1e3).toFixed(4)+" mJ";
+const fmtM=v=>v<.01?v.toFixed(4):v<1?v.toFixed(3):v.toFixed(2);
+
+// ── Validation: check all 4 cycle points stay in Q1 ──
+function inQ1(test){
+  if(!Object.entries(test).every(([k,v])=>k==="material"||(v!==""&&typeof v==="number"&&isFinite(v))))return false;
+  try{const{P1,P2,P3,P4}=compute(test);for(const p of[P1,P2,P3,P4]){if(!p||!isFinite(p[0])||!isFinite(p[1])||p[0]<-1e-9||p[1]<-1e-9||p[1]>3-.3*p[0]+1e-9)return false;}return true;}catch{return false;}
+}
+
+// ── Logarithmic friction mass helpers ──
+let lastGeo=null;
+const FRIC_MIN=0.001;
+function getFricMax(){return lastGeo?Math.max(.01,lastGeo.mfm*.999):5;}
+function f2s(v){const lMin=Math.log10(FRIC_MIN),lMax=Math.log10(getFricMax());return(Math.log10(Math.max(FRIC_MIN,v))-lMin)/(lMax-lMin);}
+function s2f(s){const lMin=Math.log10(FRIC_MIN),lMax=Math.log10(getFricMax());return Math.pow(10,lMin+s*(lMax-lMin));}
+
+// ── Safe change: binary search to boundary if value would leave Q1 ──
+function safeChange(key,val){
+  if(typeof val==="number")val=Math.max(0,val);
+  // Special handling for friction mass: clamp to just below stall
+  if(key==='fricMass'&&typeof val==='number'){
+    try{const g=compute({...inp,[key]:val});if(g.ssRPM===null||g.ssRPM<=0){const gp=compute(inp);if(gp.mfm>0)val=Math.min(val,gp.mfm*.995);}}catch{}
+  }
+  const next={...inp,[key]:val};
+  if(inQ1(next)){inp=next;return;}
+  // Binary search for boundary
+  if(!inQ1(inp))return;
+  let lo=inp[key],hi=val;if(typeof lo!=='number')return;
+  for(let i=0;i<60;i++){const m=(lo+hi)/2;if(inQ1({...inp,[key]:m}))lo=m;else hi=m;}
+  let c=val>inp[key]?Math.floor(lo*1e4)/1e4:Math.ceil(lo*1e4)/1e4;
+  if(!inQ1({...inp,[key]:c}))c=lo;
+  const ci={...inp,[key]:c};if(inQ1(ci))inp=ci;
+}
+
+const sections=[
+  {title:'Wheel',color:'#2d7cb5',fields:[{k:'wheelDiam',l:'Wheel Ø',u:'cm',tip:'Outer diameter of the frame measured across the rim.'},{k:'nArms',l:'N arms',u:'',int:true,tip:'Number of radial spring-mass assemblies.'},{k:'fricMass',l:'Friction mass',u:'g',log:true,tip:'Mass at rim that initiates rotation. Sets friction torque τ = m·g·R.'}]},
+  {title:'Humidity',color:'#2d7cb5',fields:[{k:'ambient',l:'Ambient RH',u:'%',slider:true,min:0,max:100,tip:'Relative humidity of the dry zone.'},{k:'enclosure',l:'Enclosure RH',u:'%',slider:true,min:0,max:100,tip:'Relative humidity of the wet chamber.'}]},
+  {title:'Geometry',color:'#2d7cb5',fields:[{k:'start',l:'Start angle',u:'°',slider:true,min:0,max:360,tip:'Angle where the wet zone begins (0° = 3 o\'clock).'},{k:'end',l:'End angle',u:'°',slider:true,min:0,max:360,tip:'Angle where the wet zone ends.'}]},
+  {title:'Strip & Spring',color:'#2d7cb5',fields:[{k:'stripLength',l:'Strip length',u:'cm',tip:'Length of each hygroscopic strip.'},{k:'stripWidth',l:'Strip width',u:'cm',tip:'Width of each strip.'},{k:'initPressure',l:'Max pressure',u:'MPa',tip:'Maximum stress in the hygroscopic strip at peak humidity differential.'},{k:'springConst',l:'Spring const',u:'N/m',tip:'Compression spring stiffness.'},{k:'clipMass',l:'Clip mass',u:'g',tip:'Mass at strip-spring junction.'}]}
+];
+
+const cfgPanel=document.getElementById('cfg-panel'),cfgPlots=document.getElementById('cfg-plots');
+function buildUI(){
+  cfgPanel.innerHTML='';
+  sections.forEach(s=>{const card=document.createElement('div');card.className='cfg-card';card.innerHTML=`<div class="cfg-sec-t" style="color:${s.color}">${s.title}</div>`;
+  s.fields.forEach(f=>{
+    const row=document.createElement('div');row.className='cfg-row';
+    let h=`<span class="cfg-lbl">${f.l}<i class="cfg-info">i<div class="cfg-tip">${f.tip}</div></i></span>`;
+    if(f.log){
+      // Logarithmic slider for friction mass
+      h+=`<input type="range" min="0" max="1" step="0.001" value="${f2s(inp[f.k])}" data-key="${f.k}" class="cfg-slider-log">`;
+      h+=`<input type="number" value="${fmtM(inp[f.k])}" data-key="${f.k}" class="cfg-num" step="any">`;
+    } else if(f.slider){
+      h+=`<input type="range" min="${f.min}" max="${f.max}" step="0.1" value="${inp[f.k]}" data-key="${f.k}" class="cfg-slider">`;
+      h+=`<input type="number" value="${inp[f.k]}" data-key="${f.k}" class="cfg-num" step="any">`;
+    } else {
+      h+=`<input type="number" value="${inp[f.k]}" data-key="${f.k}" class="cfg-num" step="any">`;
+    }
+    h+=`<span class="cfg-unit">${f.u}</span>`;
+    row.innerHTML=h;card.appendChild(row);
+  });cfgPanel.appendChild(card);});
+  const pc=document.createElement('div');pc.className='cfg-card';pc.style.flex='1';pc.innerHTML=`<div class="cfg-sec-t" style="color:#2d7cb5">Presets</div><div id="preset-btns" style="display:flex;gap:8px"></div>`;cfgPanel.appendChild(pc);
+  cfgPlots.innerHTML='';['sv1','sv2'].forEach(id=>{const d=document.createElement('div');d.className='cfg-plot-card';d.innerHTML=`<svg id="${id}" viewBox="0 0 500 280" preserveAspectRatio="xMidYMid meet"></svg>`;cfgPlots.appendChild(d);});
+  const st=document.createElement('div');st.id='cfg-stats-bar';st.className='cfg-stats';cfgPlots.appendChild(st);
+  const expBtn=document.createElement('button');expBtn.className='btn-p';expBtn.style.cssText='margin-top:8px;width:100%;padding:10px;font-size:11px;letter-spacing:0.06em;';expBtn.textContent='EXPORT AS PNG';expBtn.onclick=exportCfgJPG;cfgPlots.appendChild(expBtn);
+  // Bind linear sliders
+  document.querySelectorAll('.cfg-slider').forEach(el=>{el.oninput=()=>{
+    const k=el.dataset.key;const v=+el.value;
+    safeChange(k,v);
+    el.value=inp[k];
+    el.parentElement.querySelector('.cfg-num').value=inp[k];
+    renderCfg();
+  };});
+  // Bind log slider (friction mass)
+  document.querySelectorAll('.cfg-slider-log').forEach(el=>{el.oninput=()=>{
+    const raw=s2f(+el.value);
+    const clamped=Math.round(raw*1e4)/1e4;
+    safeChange('fricMass',clamped);
+    el.value=f2s(inp.fricMass);
+    el.parentElement.querySelector('.cfg-num').value=fmtM(inp.fricMass);
+    renderCfg();
+  };});
+  // Bind number inputs
+  document.querySelectorAll('.cfg-num').forEach(el=>{el.oninput=()=>{
+    const v=parseFloat(el.value);if(isNaN(v))return;
+    const k=el.dataset.key;
+    if(k==='nArms')safeChange(k,Math.max(1,Math.round(v)));
+    else safeChange(k,Math.max(0,v));
+    // Sync companion slider
+    const sl=el.parentElement.querySelector('.cfg-slider');
+    const slLog=el.parentElement.querySelector('.cfg-slider-log');
+    if(sl)sl.value=inp[k];
+    if(slLog)slLog.value=f2s(inp[k]);
+    el.value=k==='fricMass'?fmtM(inp[k]):inp[k];
+    renderCfg();
+  };});
+  const pb=document.getElementById('preset-btns');
+  PRESETS.forEach(p=>{const b=document.createElement('button');b.className='cfg-preset';b.textContent=p.n;b.dataset.name=p.n;b.onclick=()=>{inp={...p.v};syncUI();renderCfg();};pb.appendChild(b);});
+}
+function syncUI(){
+  document.querySelectorAll('.cfg-num').forEach(el=>{
+    const k=el.dataset.key;
+    el.value=k==='fricMass'?fmtM(inp[k]):inp[k];
+  });
+  document.querySelectorAll('.cfg-slider').forEach(el=>{el.value=inp[el.dataset.key];});
+  document.querySelectorAll('.cfg-slider-log').forEach(el=>{el.value=f2s(inp[el.dataset.key]);});
+  updatePresetBtns();
+}
+function updatePresetBtns(){document.querySelectorAll('.cfg-preset').forEach(b=>{const p=PRESETS.find(pr=>pr.n===b.dataset.name);const match=p&&Object.keys(p.v).every(k=>inp[k]===p.v[k]);b.className=`cfg-preset ${match?'on':'off'}`;});}
+buildUI();updatePresetBtns();
+
+const FC='rgba(0,0,0,0.03)',GC='rgba(0,0,0,0.06)',AX='rgba(0,0,0,0.2)',LB='rgba(0,0,0,0.4)',TF="font-family='Verdana,Geneva,sans-serif'";
+
+function renderPlot1(geo){const W=500,H=280,M={t:24,r:44,b:40,l:50},PW=W-M.l-M.r,PH=H-M.t-M.b,XM=11.5,YM=3.6,sx=x=>M.l+(x/XM)*PW,sy=y=>M.t+(1-y/YM)*PH;let h=`<rect x="${M.l}" y="${M.t}" width="${PW}" height="${PH}" fill="${FC}" rx="2"/>`;[0,2,4,6,8,10].forEach(v=>{h+=`<line x1="${sx(v)}" x2="${sx(v)}" y1="${sy(0)}" y2="${sy(YM)}" stroke="${GC}"/>`;});[0,.5,1,1.5,2,2.5,3,3.5].forEach(v=>{h+=`<line x1="${sx(0)}" x2="${sx(XM)}" y1="${sy(v)}" y2="${sy(v)}" stroke="${GC}"/>`;});h+=`<line x1="${sx(0)}" x2="${sx(XM)}" y1="${sy(0)}" y2="${sy(0)}" stroke="${AX}" stroke-width="1.5"/><line x1="${sx(0)}" x2="${sx(0)}" y1="${sy(0)}" y2="${sy(YM)}" stroke="${AX}" stroke-width="1.5"/>`;[0,2,4,6,8,10].forEach(v=>{h+=`<text x="${sx(v)}" y="${sy(0)+13}" text-anchor="middle" fill="${LB}" font-size="10" ${TF}>${v}</text>`;});[.5,1,1.5,2,2.5,3].forEach(v=>{h+=`<text x="${sx(0)-6}" y="${sy(v)+3}" text-anchor="end" fill="${LB}" font-size="10" ${TF}>${v}</text>`;});h+=`<text x="${sx(XM/2)}" y="${sy(0)+32}" text-anchor="middle" fill="${LB}" font-size="11" font-weight="500" ${TF}>σ (MPa)</text><text x="${sx(0)-36}" y="${sy(YM/2)}" text-anchor="middle" fill="${LB}" font-size="11" font-weight="500" ${TF} transform="rotate(-90,${sx(0)-36},${sy(YM/2)})">ε (%)</text>`;h+=`<line x1="${sx(0)}" y1="${sy(3)}" x2="${sx(10)}" y2="${sy(0)}" stroke="rgba(255,255,255,0.1)" stroke-width="1.5"/>`;if(geo.c1)h+=`<line x1="${sx(geo.c1[0][0])}" y1="${sy(geo.c1[0][1])}" x2="${sx(geo.c1[1][0])}" y2="${sy(geo.c1[1][1])}" stroke="rgba(255,255,255,0.1)" stroke-width=".8" stroke-dasharray="5 4"/>`;if(geo.c2)h+=`<line x1="${sx(geo.c2[0][0])}" y1="${sy(geo.c2[0][1])}" x2="${sx(geo.c2[1][0])}" y2="${sy(geo.c2[1][1])}" stroke="rgba(255,255,255,0.1)" stroke-width=".8" stroke-dasharray="5 4"/>`;if(geo.c3)h+=`<line x1="${sx(geo.c3[0][0])}" y1="${sy(geo.c3[0][1])}" x2="${sx(geo.c3[1][0])}" y2="${sy(geo.c3[1][1])}" stroke="rgba(45,124,181,0.35)" stroke-width=".8" stroke-dasharray="5 4"/>`;if(geo.c4)h+=`<line x1="${sx(geo.c4[0][0])}" y1="${sy(geo.c4[0][1])}" x2="${sx(geo.c4[1][0])}" y2="${sy(geo.c4[1][1])}" stroke="rgba(45,124,181,0.35)" stroke-width=".8" stroke-dasharray="5 4"/>`;if(geo.poly)h+=`<polygon points="${geo.poly.map(p=>`${sx(p[0])},${sy(p[1])}`).join(' ')}" fill="rgba(45,124,181,0.06)" stroke="#2d7cb5" stroke-width="1" stroke-dasharray="4 3"/>`;if(geo.ePoly)h+=`<polygon points="${geo.ePoly.map(p=>`${sx(p[0])},${sy(p[1])}`).join(' ')}" fill="rgba(45,124,181,0.18)" stroke="#2d7cb5" stroke-width="2"/>`;[{p:geo.P1,l:'P1'},{p:geo.P2,l:'P2'},{p:geo.P3,l:'P3'},{p:geo.P4,l:'P4'}].forEach(({p,l})=>{if(p)h+=`<circle cx="${sx(p[0])}" cy="${sy(p[1])}" r="3.5" fill="#2d7cb5" stroke="#0a0b0d" stroke-width="1.5"/><text x="${sx(p[0])+7}" y="${sy(p[1])-6}" fill="#2d7cb5" font-size="9" font-weight="700" ${TF}>${l}</text>`;});h+=`<text x="${W-M.r-4}" y="${M.t+13}" text-anchor="end" fill="#c2410c" font-size="10" font-weight="600" ${TF}>E density: ${geo.area.toFixed(3)} MJ/m³</text><text x="${W-M.r-4}" y="${M.t+26}" text-anchor="end" fill="#ef4444" font-size="10" font-weight="600" ${TF}>E total: ${fmtE(geo.Et)} / rev</text>`;document.getElementById('sv1').innerHTML=h;}
+
+function renderPlot2(geo){if(!geo.sweep||geo.sweep.length<2)return;const W=500,H=280,M={t:24,r:48,b:40,l:50},PW=W-M.l-M.r,PH=H-M.t-M.b,maxR=Math.min(5,Math.max(.5,(geo.ssRPM||.3)*4)),f=geo.sweep.filter(s=>s.rpm<=maxR),maxT=Math.max(f[0]?.tau||1e-6,geo.tauK*1.5)*1e3,maxP=Math.max(...f.map(s=>s.P*1e6),1e-6),cx=r=>M.l+(r/maxR)*PW,ct=t=>M.t+(1-t/maxT)*PH,cp=p=>M.t+(1-p/maxP)*PH;let h=`<rect x="${M.l}" y="${M.t}" width="${PW}" height="${PH}" fill="${FC}" rx="2"/>`;const rS=maxR<=.5?.1:maxR<=1?.2:maxR<=2?.5:1;for(let v=0;v<=maxR+.001;v+=rS){h+=`<line x1="${cx(v)}" x2="${cx(v)}" y1="${M.t}" y2="${M.t+PH}" stroke="${GC}"/><text x="${cx(v)}" y="${M.t+PH+13}" text-anchor="middle" fill="${LB}" font-size="10" ${TF}>${(Math.round(v*100)/100)}</text>`;}const tS=maxT<=1?.2:maxT<=5?1:maxT<=20?5:10;for(let v=0;v<=maxT+.001;v+=tS){h+=`<line x1="${M.l}" x2="${M.l+PW}" y1="${ct(v)}" y2="${ct(v)}" stroke="${GC}"/><text x="${M.l-6}" y="${ct(v)+3}" text-anchor="end" fill="rgba(45,124,181,0.5)" font-size="10" ${TF}>${(Math.round(v*100)/100)}</text>`;}h+=`<line x1="${M.l}" x2="${M.l+PW}" y1="${M.t+PH}" y2="${M.t+PH}" stroke="${AX}" stroke-width="1.5"/><line x1="${M.l}" x2="${M.l}" y1="${M.t}" y2="${M.t+PH}" stroke="${AX}" stroke-width="1.5"/>`;const fY=ct(geo.tauK*1e3);h+=`<line x1="${M.l}" x2="${M.l+PW}" y1="${fY}" y2="${fY}" stroke="#ef4444" stroke-width="1.2" stroke-dasharray="6 4"/>`;h+=`<polyline points="${f.map(s=>`${cx(s.rpm)},${ct(s.tau*1e3)}`).join(' ')}" fill="none" stroke="#2d7cb5" stroke-width="2"/><polyline points="${f.map(s=>`${cx(s.rpm)},${cp(s.P*1e6)}`).join(' ')}" fill="none" stroke="#c2410c" stroke-width="2"/>`;if(geo.ssRPM){const ssX=cx(geo.ssRPM);h+=`<circle cx="${ssX}" cy="${fY}" r="4.5" fill="#c2410c" stroke="#0a0b0d" stroke-width="2"/><text x="${ssX}" y="${fY-10}" text-anchor="middle" fill="#c2410c" font-size="10" font-weight="700" ${TF}>${geo.ssRPM.toFixed(3)} RPM</text>`;}h+=`<text x="${cx(maxR/2)}" y="${M.t+PH+30}" text-anchor="middle" fill="${LB}" font-size="11" font-weight="500" ${TF}>RPM</text><text x="${M.l-34}" y="${M.t+PH/2}" text-anchor="middle" fill="rgba(45,124,181,0.55)" font-size="11" font-weight="500" ${TF} transform="rotate(-90,${M.l-34},${M.t+PH/2})">Torque (mN·m)</text><text x="${M.l+PW+36}" y="${M.t+PH/2}" text-anchor="middle" fill="rgba(194,65,12,0.55)" font-size="11" font-weight="500" ${TF} transform="rotate(90,${M.l+PW+36},${M.t+PH/2})">Power (μW)</text>`;h+=`<g transform="translate(${M.l+6},${M.t+6})"><line x1="0" x2="12" y1="4" y2="4" stroke="#2d7cb5" stroke-width="2"/><text x="15" y="7" fill="${LB}" font-size="9" ${TF}>Torque</text><line x1="0" x2="12" y1="14" y2="14" stroke="#c2410c" stroke-width="2"/><text x="15" y="17" fill="${LB}" font-size="9" ${TF}>Power</text><line x1="0" x2="12" y1="24" y2="24" stroke="#ef4444" stroke-width="1.2" stroke-dasharray="4 3"/><text x="15" y="27" fill="${LB}" font-size="9" ${TF}>Friction</text></g>`;document.getElementById('sv2').innerHTML=h;}
+
+function renderStats(geo){const sc=geo.ssRPM?'#22c55e':'#ef4444';document.getElementById('cfg-stats-bar').innerHTML=`<div><div class="cfg-stat-label">Steady-state</div><div class="cfg-stat-val" style="color:${sc};font-size:18px">${geo.ssRPM?geo.ssRPM.toFixed(3):'STALL'}<span class="cfg-stat-unit">RPM</span></div></div><div class="cfg-stat-div"></div><div><div class="cfg-stat-label">Energy density</div><div class="cfg-stat-val" style="color:#c2410c">${geo.area.toFixed(3)}<span class="cfg-stat-unit">MJ/m³</span></div></div><div class="cfg-stat-div"></div><div><div class="cfg-stat-label">Energy / rev</div><div class="cfg-stat-val" style="color:#ef4444">${fmtE(geo.Et)}</div></div><div class="cfg-stat-div"></div><div><div class="cfg-stat-label">Utilization</div><div class="cfg-stat-val" style="color:#2d7cb5">${geo.ssRPM?(geo.sFrac*100).toFixed(1):'—'}<span class="cfg-stat-unit">%</span></div></div><div class="cfg-stat-div"></div><div><div class="cfg-stat-label">Friction torque</div><div class="cfg-stat-val" style="color:rgba(0,0,0,0.5)">${(geo.tauK*1e3).toFixed(4)}<span class="cfg-stat-unit">mN·m</span></div></div><div class="cfg-stat-div"></div><div><div class="cfg-stat-label">Max power</div><div class="cfg-stat-val" style="color:#22c55e">${(geo.maxP*1e6).toFixed(3)}<span class="cfg-stat-unit">μW</span></div></div>`;}
+
+function renderCfg(){const geo=compute(inp);lastGeo=geo;renderPlot1(geo);renderPlot2(geo);renderStats(geo);updatePresetBtns();}
+renderCfg();
+
+function exportCfgJPG(){
+  const W=1000,SVGH=280,GAP=12,BARH=60,H=SVGH+GAP+SVGH+GAP+BARH;
+  const cv=document.createElement('canvas');cv.width=W;cv.height=H;
+  const ctx=cv.getContext('2d');
+  // transparent background — no fillRect
+  const svgs=[document.getElementById('sv1'),document.getElementById('sv2')];
+  let loaded=0;const imgs=[];
+  svgs.forEach((svg,i)=>{
+    const clone=svg.cloneNode(true);
+    clone.setAttribute('width',W);clone.setAttribute('height',SVGH);
+    const xml=new XMLSerializer().serializeToString(clone);
+    const blob=new Blob([xml],{type:'image/svg+xml;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const img=new Image();
+    img.onload=()=>{imgs[i]=img;loaded++;if(loaded===2)compose();URL.revokeObjectURL(url);};
+    img.src=url;
+  });
+  function compose(){
+    let y=0;
+    ctx.drawImage(imgs[0],0,y,W,SVGH);y+=SVGH+GAP;
+    ctx.drawImage(imgs[1],0,y,W,SVGH);y+=SVGH+GAP;
+    ctx.fillStyle='rgba(0,0,0,0.04)';
+    ctx.beginPath();
+    const r=8,bx=0,by=y,bw=W,bh=BARH;
+    ctx.moveTo(bx+r,by);ctx.lineTo(bx+bw-r,by);ctx.quadraticCurveTo(bx+bw,by,bx+bw,by+r);
+    ctx.lineTo(bx+bw,by+bh-r);ctx.quadraticCurveTo(bx+bw,by+bh,bx+bw-r,by+bh);
+    ctx.lineTo(bx+r,by+bh);ctx.quadraticCurveTo(bx,by+bh,bx,by+bh-r);
+    ctx.lineTo(bx,by+r);ctx.quadraticCurveTo(bx,by,bx+r,by);ctx.fill();
+    ctx.strokeStyle='rgba(0,0,0,0.08)';ctx.lineWidth=1;ctx.stroke();
+    const bar=document.getElementById('cfg-stats-bar');
+    const items=bar.querySelectorAll(':scope > div:not(.cfg-stat-div)');
+    const cols=items.length||1;
+    const colW=(bw-32)/cols;
+    let cx=bx+16;
+    items.forEach(item=>{
+      const label=item.querySelector('.cfg-stat-label');
+      const val=item.querySelector('.cfg-stat-val');
+      if(label){ctx.fillStyle='rgba(0,0,0,0.35)';ctx.font='bold 8px Verdana,Geneva,sans-serif';ctx.textBaseline='top';ctx.fillText(label.textContent.toUpperCase(),cx,by+12);}
+      if(val){
+        const style=getComputedStyle(val);
+        ctx.fillStyle=style.color||'#1a1e2a';ctx.font='bold 14px Verdana,Geneva,sans-serif';ctx.textBaseline='top';
+        ctx.fillText(val.textContent,cx,by+28);
+      }
+      cx+=colW;
+    });
+    const link=document.createElement('a');link.download='evapoflex_cycle.png';
+    link.href=cv.toDataURL('image/png');link.click();
+  }
+}
+
+// ── Animation ──
+function animate(){requestAnimationFrame(animate);try{const hR=document.querySelector('.hero').getBoundingClientRect(),hP=Math.max(0,Math.min(1,-hR.top/(hR.height-innerHeight)));hero.group.rotation.y=hP*Math.PI*2.5;hero.group.rotation.x=.3-hP*.25;hiw.group.rotation.y+=.003;hiw.cam.position.x+=(targetCam[0]-hiw.cam.position.x)*.03;hiw.cam.position.y+=(targetCam[1]-hiw.cam.position.y)*.03;hiw.cam.position.z+=(targetCam[2]-hiw.cam.position.z)*.03;hiw.cam.lookAt(0,0,0);if(threeOK){hero.r.render(hero.sc,hero.cam);hiw.r.render(hiw.sc,hiw.cam);}}catch(e){}}
+animate();
+window.addEventListener('scroll',()=>{const y=scrollY;document.getElementById('nav').classList.toggle('sc',y>60);const fab=document.getElementById('fab');if(fab)fab.classList.toggle('show',y>innerHeight*0.6);},{passive:true});
+const obs=new IntersectionObserver(es=>{es.forEach(e=>{if(e.isIntersecting)e.target.classList.add('vi');});},{threshold:.15});document.querySelectorAll('.rv').forEach(el=>obs.observe(el));
+
+/* ---- live rig indicator ----------------------------------------------
+   The marketing site is static (Cloudflare Pages) and the rig is a separate
+   origin, so the button carries an absolute URL. When this page is served BY
+   the rig server it is already same-origin, and when it is served from a dev
+   machine we want the local rig, not production. */
+(function(){
+  const cta = document.getElementById('live-cta');
+  if(!cta) return;
+  const local = ['localhost','127.0.0.1'].includes(location.hostname);
+  const sameOrigin = local || location.hostname.startsWith('rig.');
+  const origin = sameOrigin ? location.origin : new URL(cta.href).origin;
+  cta.href = origin + '/live.html';
+
+  // Only claim "live" if the rig says a camera is actually streaming. A
+  // permanently-lit indicator teaches people to ignore it.
+  fetch(origin + '/api/live/status', {mode:'cors'})
+    .then(r => r.ok ? r.json() : null)
+    .then(s => {
+      if(!s) return;
+      cta.classList.toggle('on', !!(s.feed && s.feed.up));
+      const rpm = s.metrics && s.metrics.current_rpm;
+      if(s.feed && s.feed.up && rpm != null){
+        cta.title = `Rig is streaming · ${Number(rpm).toFixed(3)} RPM`;
+      }
+    })
+    .catch(()=>{});   // rig down or unreachable: button still works, dot stays dim
+})();
+</script>
+</body>
+</html>
