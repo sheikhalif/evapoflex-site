@@ -45,7 +45,7 @@ export function extractFeatures(m, reg, opts = {}) {
       seen.add(key);
       const a = va * 3, b = vb * 3;
       edges.push({
-        t, k, va, vb, angle, convex,
+        t, k, o, va, vb, angle, convex,
         len: Math.hypot(verts[b] - verts[a], verts[b + 1] - verts[a + 1], verts[b + 2] - verts[a + 2]),
         regA: reg.triRegion[t], regB: o < 0 ? -1 : reg.triRegion[o],
       });
