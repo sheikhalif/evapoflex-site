@@ -240,17 +240,50 @@ serve({
       // plain WITH the reason rather than throwing - that is the same bargain
       // the seam list already makes elsewhere, and it keeps one narrow rail
       // from vetoing a cut the other fifteen can take.
+      // A pad may not grow into its neighbour.
+      //
+      // The default boss is 18 mm wide on a 6 mm rail, so two rails 12 mm apart
+      // get pads that overlap by 6 mm and fuse. Measured on rails at x=+-6:
+      // before the cut the seam crosses two clean lumps, after it one side came
+      // back as a single part spanning both rails and the other as that part
+      // plus a 1.8 mm sliver of leftover pad - two parts the planner meant to
+      // keep separate welded together, and debris carved out of the bridge by
+      // the two sockets. Capping each pad at half the distance to its
+      // neighbour, less half a millimetre, keeps them apart; a rail with no
+      // room to grow simply gets no pad and says so.
+      const centres = paired.map(({ ask }) => Number(ask.at)).sort((x, y) => x - y);
+      const roomAt = (at) => {
+        let room = Infinity;
+        for (const c of centres) if (c !== at) room = Math.min(room, Math.abs(c - at) - 1);
+        return room;                                   // full width available to this pad
+      };
+
       const tabs = paired.map(({ lump, ask }) => {
+        const at = Number(ask.at);
         const width = Number(ask.width ?? lump.width);
+        if (!Number.isFinite(at) || !Number.isFinite(width) || width <= 0) {
+          throw new Error(`a tab needs a finite at and a positive width, got at=${ask.at} width=${ask.width}`);
+        }
         if (width > lump.width + 1e-6) {
           throw new Error(`asked for a ${width.toFixed(1)} mm tab in ${lump.width.toFixed(1)} mm of material `
             + `at ${lump.at.toFixed(1)}`);
         }
-        if (ask.plain) return { at: Number(ask.at), width, plain: true, params: null, why: 'asked for a plain cut' };
-        const p = seamParams(opts?.type || 'dovetail', { width, thickness: T }, opts || {});
+        if (ask.plain) return { at, width, plain: true, params: null, why: 'asked for a plain cut' };
+
+        const room = roomAt(at);
+        const wanted = opts?.boss ? seamParams(opts.type || 'dovetail', { width, thickness: T }, opts).boss.width : 0;
+        const capped = opts?.boss && wanted > room;
+        const useOpts = capped
+          ? { ...opts, boss: room > width ? { ...opts.boss, width: room } : null }
+          : opts || {};
+        const p = seamParams(useOpts.type || 'dovetail', { width, thickness: T }, useOpts);
+        const note = !capped ? null
+          : room > width
+            ? `pad capped to ${room.toFixed(1)} mm by the neighbouring rail (wanted ${wanted.toFixed(1)})`
+            : 'no room to pad between the neighbouring rails';
         return p.ok
-          ? { at: Number(ask.at), width, plain: false, params: p, why: null }
-          : { at: Number(ask.at), width, plain: true, params: p, why: p.why || 'stock too thin for a seam joint' };
+          ? { at, width, plain: false, params: p, why: note }
+          : { at, width, plain: true, params: p, why: p.why || 'stock too thin for a seam joint' };
       });
 
       // Build the cut: a backing halfspace with every tab added to it, and the
@@ -290,6 +323,23 @@ serve({
       }
 
       const stockSolid = pad ? forceEval(m.add(pad)) : m;
+
+      // The cap above only knows about other tabs. A pad also reaches 12 mm or
+      // more ALONG the seam, where it can run into something the seam never
+      // crossed - a rail at right angles, a fillet, the next spoke round. If
+      // padding has merged lumps that were separate, the cut would silently
+      // weld two parts into one, so check the topology is what it was and
+      // refuse if it is not. Cheap next to the booleans, and it is the only
+      // check that sees geometry the tab list cannot describe.
+      if (pad) {
+        const after = seamSection(stockSolid, k, d).lumps.length;
+        if (after !== lumps.length) {
+          aSide.delete(); bSide.delete(); pad.delete(); stockSolid.delete();
+          throw new Error(`padding the seam merged ${lumps.length} lumps into ${after} - `
+            + 'the joints would weld parts the plan keeps separate');
+        }
+      }
+
       const cutA = Manifold.extrude(aSide, T + 4).translate([0, 0, bb.min[2] - 2]);
       const cutB = Manifold.extrude(bSide, T + 4).translate([0, 0, bb.min[2] - 2]);
       const lo = forceEval(stockSolid.intersect(cutA));   // the x_k <= d side, tab included
