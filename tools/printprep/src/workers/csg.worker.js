@@ -8,7 +8,7 @@ import { initManifold, ctx, solidFromMesh, forceEval } from '../csg/manifoldCtx.
 import * as arena from '../csg/arena.js';
 import { meshOut, transfersOf, soupToMesh } from '../csg/convert.js';
 import { makeJoint, params as jointParams } from '../csg/joint.js';
-import { makeSeamCoupon, makeSeamPair, seamParams } from '../csg/seamJoints.js';
+import { makeSeamCoupon, makeSeamPair, seamParams, tabPolygon } from '../csg/seamJoints.js';
 import { stampJoints } from '../csg/jointStamp.js';
 import { chamferChains } from '../csg/chamfer.js';
 import { writeSTL } from '../geom/stl.js';
@@ -126,6 +126,81 @@ serve({
       arena.release(solidId);
       out.sort((p, q) => q.volume - p.volume);
       return { parts: out, split: true };
+    } finally { arena.endScope(); }
+  },
+
+  /**
+   * Split one solid with a JOINTED cut instead of a plane.
+   *
+   * The joint is not stamped onto the halves afterwards - the cut itself
+   * carries the profile, so the two pieces come out already mated and there is
+   * nothing to audit for containment: a joint that is the shape of the cut
+   * cannot poke out of its own part.
+   *
+   * Restricted, on purpose, to what it can do honestly: a sheet lying in XY
+   * with an axis-aligned cut. That is exactly the EEDX case - a 10 mm sheet
+   * grid-cut along X and Y - and the extrusion axis is then already Z, so the
+   * profile maps straight into world coordinates with no basis to get wrong.
+   * Anything else is refused rather than silently cut on a plane, because a
+   * seam the user believes is jointed and is not is the worst outcome here.
+   */
+  async 'csg.splitProfiled'({ solidId, plane, stock, opts }) {
+    const k = [0, 1, 2].findIndex((i) => Math.abs(plane.n[i]) > 0.999);
+    if (k !== 0 && k !== 1) {
+      throw new Error('profiled cuts need an X or Y aligned seam through a sheet lying in XY');
+    }
+    arena.beginScope();
+    try {
+      const m = arena.M(solidId);
+      const bb = m.boundingBox();
+      const T = bb.max[2] - bb.min[2];
+      const p = seamParams(opts?.type || 'dovetail', { width: stock.width, thickness: T }, opts || {});
+      if (!p.ok) throw new Error(p.why || 'stock too thin for a seam joint');
+
+      const d = plane.d * Math.sign(plane.n[k]);
+      const uAxis = k === 0 ? 1 : 0;
+      const uMid = stock.at ?? (bb.min[uAxis] + bb.max[uAxis]) / 2;
+      const span = 4 * Math.max(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]);
+
+      // Local (x across the seam, y along the cut normal) -> world XY.
+      const toWorld = ([x, y]) => {
+        const w = [0, 0];
+        w[k] = d + y;
+        w[uAxis] = uMid + x;
+        return w;
+      };
+      const backing = [[-span, -span], [span, -span], [span, 0], [-span, 0]];
+      const cs = (pts, grow) => {
+        let c = new (ctx().CrossSection)([pts.map(toWorld)], 'Positive');
+        if (grow) { const g = c.offset(grow, 'Miter', 2, 0); c.delete(); c = g; }
+        return c;
+      };
+      const half = cs(backing, 0);
+      const tab = cs(tabPolygon(p), 0);
+      const tabFat = cs(tabPolygon(p), p.clearance);
+      const aSide = half.add(tab);            // everything behind the seam, tab included
+      const bSide = half.add(tabFat);         // the socket, opened by the clearance
+
+      const { Manifold } = ctx();
+      const cutA = Manifold.extrude(aSide, T + 4).translate([0, 0, bb.min[2] - 2]);
+      const cutB = Manifold.extrude(bSide, T + 4).translate([0, 0, bb.min[2] - 2]);
+      const A = forceEval(m.intersect(cutA));
+      const B = forceEval(m.subtract(cutB));
+      for (const c of [half, tab, tabFat, aSide, bSide]) c.delete();
+      cutA.delete(); cutB.delete();
+
+      if (A.isEmpty() || B.isEmpty()) {
+        A.delete(); B.delete();
+        return { aId: null, bId: null, why: 'the profiled cut missed the solid' };
+      }
+      const aId = arena.retain(arena.track(A));
+      const bId = arena.retain(arena.track(B));
+      arena.release(solidId);
+      return {
+        aId, bId, params: p,
+        aVolume: A.volume(), bVolume: B.volume(),
+        aBbox: A.boundingBox(), bBbox: B.boundingBox(),
+      };
     } finally { arena.endScope(); }
   },
 

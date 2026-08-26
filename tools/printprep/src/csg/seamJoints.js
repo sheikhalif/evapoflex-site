@@ -322,6 +322,40 @@ export function makeSeamPair(type, stock, opts = {}) {
 }
 
 /**
+ * The cutter that turns a plane cut into a jointed one.
+ *
+ * Everything on the +n side of the seam, as a solid: a half-space whose
+ * boundary is the joint profile instead of a plane, extruded through the sheet.
+ * Intersect a part with it to get one half, subtract it to get the other, and
+ * the two come out already jointed - no stamping pass, no containment audit,
+ * because the joint was never added to the part, it is the shape of the cut.
+ *
+ * The frame is the seam's own: u across the rail, n along it, z through the
+ * thickness. The caller supplies that basis and the extent to cover.
+ *
+ * `grow` opens the socket side by the clearance. Only the tab is grown, not the
+ * whole boundary, so the flat shoulders either side still meet - the joint
+ * locates on the tab and seats on the shoulders.
+ */
+export function seamCutter(p, { span, thickness, grow = 0 }) {
+  const { Manifold } = ctx();
+  const far = span;
+  // Region behind the seam line, wide and deep enough to swallow the part.
+  const backing = [[-far, -far], [far, -far], [far, 0], [-far, 0]];
+  let cs = crossSection(backing);
+  const tabCs = (() => {
+    let t = crossSection(tabPolygon(p));
+    if (grow) { const g = t.offset(grow, 'Miter', 2, 0); t.delete(); t = g; }
+    return t;
+  })();
+  const joined = cs.add(tabCs);
+  cs.delete(); tabCs.delete();
+  const solid = Manifold.extrude(joined, thickness + 4).translate([0, 0, -2]);
+  joined.delete();
+  return solid;
+}
+
+/**
  * A coupon: every variant asked for, laid out side by side, male and female
  * separated so they print as loose parts and can be tried by hand.
  */
