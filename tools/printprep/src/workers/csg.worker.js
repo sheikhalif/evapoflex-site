@@ -180,11 +180,25 @@ serve({
       const sgn = Math.sign(plane.n[k]);
       const d = plane.d * sgn;
       const uAxis = k === 0 ? 1 : 0;
+      const uMid = (bb.min[uAxis] + bb.max[uAxis]) / 2;
       const span = 4 * Math.max(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]);
       const { Manifold } = ctx();
 
       const { lumps } = seamSection(m, k, d);
       if (!lumps.length) throw new Error('the seam plane does not cross the solid');
+
+      // "A sheet lying in XY" is asserted in the contract but only the seam
+      // NORMAL was ever checked. T is the whole solid's z extent, and it is
+      // what sizes the joint and the pad, so if the seam crosses material
+      // thinner than the solid is tall - rails around a taller hub, say - then
+      // every number here is taken from geometry the seam never touches, and
+      // the pad is extruded as a fin through empty space above the rail.
+      // Check it against what the section actually found.
+      const thin = lumps.find((l) => l.zHi - l.zLo < T - 1e-3);
+      if (thin) {
+        throw new Error(`the seam crosses material ${(thin.zHi - thin.zLo).toFixed(1)} mm thick in a solid `
+          + `${T.toFixed(1)} mm tall - profiled cuts need a sheet of one thickness`);
+      }
 
       // Local (x across the rail, y along the cut normal) -> world XY, about a
       // given position along the seam.
@@ -264,9 +278,21 @@ serve({
         if (!Number.isFinite(at) || !Number.isFinite(width) || width <= 0) {
           throw new Error(`a tab needs a finite at and a positive width, got at=${ask.at} width=${ask.width}`);
         }
-        if (width > lump.width + 1e-6) {
+        // `lump.width` is measured off float32 vertices, so a nominally 6.000 mm
+        // rail on a model 3.2 m from the origin measures 5.99976 as readily as
+        // 6.00024. Comparing a caller's round number against it exactly would
+        // reject the rail for being a quarter of a micron too narrow.
+        const tol = 1e-5 * Math.max(1, Math.abs(lump.uLo), Math.abs(lump.uHi));
+        if (width > lump.width + tol) {
           throw new Error(`asked for a ${width.toFixed(1)} mm tab in ${lump.width.toFixed(1)} mm of material `
             + `at ${lump.at.toFixed(1)}`);
+        }
+        // The centre being inside the lump is not enough - a tab centred near a
+        // rail's edge hangs off it, gets clipped away by the intersect, and
+        // still reports a full-size joint. The tab has to FIT.
+        if (at - width / 2 < lump.uLo - tol || at + width / 2 > lump.uHi + tol) {
+          throw new Error(`a ${width.toFixed(1)} mm tab at ${at.toFixed(1)} does not fit the material at `
+            + `${lump.uLo.toFixed(1)}..${lump.uHi.toFixed(1)}`);
         }
         if (ask.plain) return { at, width, plain: true, params: null, why: 'asked for a plain cut' };
 
@@ -297,9 +323,15 @@ serve({
       // grown socket takes that whole width out of the other half. Measured on
       // 6 x 60 x 10 stock the halves came out spanning y <= 3.90 and y >= 4.08
       // - a butt cut with a 0.18 mm gap, nothing touching anywhere.
+      // Centred on the SOLID, not the origin - `span` is reckoned from the
+      // model's own size, so laying it out from u = 0 only covers the model
+      // when the model sits near the origin. Measured on a 100 mm slab at
+      // x = 350..450 against a span of 400: the cutter reached x = 400, the
+      // material beyond it was in neither half, and the two "halves" came back
+      // still welded together across the seam.
       const backing = [[-span, -span], [span, -span], [span, 0], [-span, 0]];
-      let aSide = cs(backing, 0, 0);
-      let bSide = cs(backing, 0, 0);
+      let aSide = cs(backing, uMid, 0);
+      let bSide = cs(backing, uMid, 0);
       let pad = null;
       const add = (target, poly, at, grow) => {
         const piece = cs(poly, at, grow);
@@ -314,7 +346,10 @@ serve({
         const bossPoly = bossPolygon(t.params);
         if (!bossPoly) continue;
         const bcs = cs(bossPoly, t.at, 0);
-        const slab = Manifold.extrude(bcs, T).translate([0, 0, bb.min[2]]);
+        // extrude() then translate() is two allocations, not one.
+        const flat = Manifold.extrude(bcs, T);
+        const slab = flat.translate([0, 0, bb.min[2]]);
+        flat.delete();
         bcs.delete();
         if (!pad) { pad = slab; continue; }
         const merged = forceEval(pad.add(slab));
@@ -340,8 +375,11 @@ serve({
         }
       }
 
-      const cutA = Manifold.extrude(aSide, T + 4).translate([0, 0, bb.min[2] - 2]);
-      const cutB = Manifold.extrude(bSide, T + 4).translate([0, 0, bb.min[2] - 2]);
+      const flatA = Manifold.extrude(aSide, T + 4);
+      const flatB = Manifold.extrude(bSide, T + 4);
+      const cutA = flatA.translate([0, 0, bb.min[2] - 2]);
+      const cutB = flatB.translate([0, 0, bb.min[2] - 2]);
+      flatA.delete(); flatB.delete();
       const lo = forceEval(stockSolid.intersect(cutA));   // the x_k <= d side, tab included
       const hi = forceEval(stockSolid.subtract(cutB));    // the x_k >= d side, socketed
       aSide.delete(); bSide.delete(); cutA.delete(); cutB.delete();
@@ -512,19 +550,31 @@ function seamAxis(plane) {
  *
  * Lumps come back sorted along the seam, so a caller pairing tabs to them by
  * position gets a stable order between the measuring call and the cutting one.
+ *
+ * The probe is centred on the SOLID, not on the origin. A span reckoned from
+ * the model's own size but laid out from u = 0 covers the model only when the
+ * model happens to sit near the origin: measured on a 100 mm slab at
+ * x = 350..450, the probe reached x = 400 and reported one lump 50 mm wide for
+ * material that is 100 mm wide. The EEDX wheel sits at x = 3193..4160 against
+ * a span of 3869, so 291 mm of its rim would have gone unseen.
  */
 function seamSection(m, k, d) {
   const { Manifold, CrossSection } = ctx();
   const bb = m.boundingBox();
   const uAxis = k === 0 ? 1 : 0;
   const T = bb.max[2] - bb.min[2];
+  const uMid = (bb.min[uAxis] + bb.max[uAxis]) / 2;
   const span = 4 * Math.max(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]);
   const probe = 0.5;
   const ring = [[-span, -probe / 2], [span, -probe / 2], [span, probe / 2], [-span, probe / 2]]
-    .map(([x, y]) => { const w = [0, 0]; w[k] = d + y; w[uAxis] = x; return w; });
+    .map(([x, y]) => { const w = [0, 0]; w[k] = d + y; w[uAxis] = uMid + x; return w; });
   if (k === 0) ring.reverse();
   const rect = new CrossSection([ring], 'Positive');
-  const slab = Manifold.extrude(rect, T + 4).translate([0, 0, bb.min[2] - 2]);
+  // extrude() and translate() each allocate; only the translated one is kept,
+  // so the intermediate has to be released by hand or it leaks for the session.
+  const flat = Manifold.extrude(rect, T + 4);
+  const slab = flat.translate([0, 0, bb.min[2] - 2]);
+  flat.delete();
   rect.delete();
   const sec = forceEval(m.intersect(slab));
   slab.delete();

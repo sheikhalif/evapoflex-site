@@ -113,18 +113,26 @@ export function seamParams(type, stock, opts = {}) {
 
   const tabL = L;
 
-  // The pad has to be long enough to hold the whole tab.
+  // The pad has to be long enough to hold the whole tab AT FULL WIDTH.
   //
   // tabL grows as the flank gets shallower - at 15 degrees on 6 mm stock it
   // reaches 14.6 mm while the default pad reaches only 12 - and a tab tip
   // poking out past the pad is back in raw rail, where it clips to the rail
-  // width. Measured there: the tab flares to 14.2 mm at the pad's end and then
-  // drops straight to 6 mm, so the joint grips about 3.2 mm while `grip` below
-  // still reports 3.9, and the abrupt shoulder is precisely the step the 45
-  // degree ramp exists to avoid. A shallower flank is the recommended
-  // direction, so grow the pad to follow the tab rather than capping the tab
-  // to fit the pad - the extra pad costs a fraction of a gram.
-  const bossLen = boss ? Math.max(bossL, 2 * (tabL + 2)) : 0;
+  // width. But the pad is not a rectangle: it is full width only within
+  // `ramp` of its own ends, because it tapers back to the rail at 45 degrees.
+  // So the length that matters is 2*(tabL + ramp + margin), not 2*(tabL +
+  // margin) - budgeting only the margin leaves the tab tip inside the taper,
+  // which is the same clipping one step further out.
+  //
+  // Worked through at 15 degrees on 6 x 10 stock with the old 24 mm pad: the
+  // pad is 18 mm wide only to n = 6 and tapers to 6 mm by n = 12, while the
+  // tab half-width grows as 3.9 + 0.268n. They cross at n = 8.76, so the tab's
+  // widest real point is 12.5 mm rather than its nominal 15.6, and the joint
+  // grips 2.35 mm while `grip` below reports 3.9. A shallower flank is the
+  // recommended direction, so the pad follows the tab rather than the tab
+  // being capped to fit the pad - the extra pad costs a fraction of a gram.
+  const bossRamp = (bossW - rawW) / 2;
+  const bossLen = boss ? Math.max(bossL, 2 * (tabL + bossRamp + 2)) : 0;
 
   // Pillars: round posts standing through the full thickness, on the male's
   // shoulder either side of the tab, entering matching bores in the female.
@@ -151,7 +159,7 @@ export function seamParams(type, stock, opts = {}) {
 
   return {
     type, W, T, rawW, neck, head, R, centre, tabL, clearance, sideWall, flankDeg,
-    boss: boss ? { width: bossW, length: bossLen, ramp: (bossW - rawW) / 2 } : null,
+    boss: boss ? { width: bossW, length: bossLen, ramp: bossRamp } : null,
     pillars: pillarFit ? pillars : 0, pillarR: pr, pillarAt, pillarDepth,
     detent: detent > 0 && T >= 4 ? detent : 0,
     detentR: Math.min(detentR, 0.14 * T, 0.28 * neck),
