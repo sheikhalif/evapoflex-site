@@ -327,3 +327,36 @@ EVAPOFLEX_DATA=/tmp/rig-test PORT=8099 python3 server/app.py
 It prints a generated admin password once. `localhost` is a secure context, so
 `capture.html` will use your laptop's webcam — point it at something green and
 the whole system is exercisable without the rig.
+
+---
+
+## Print Prep (`printprep.html`)
+
+A second tool joined the site: a password-gated, fully client-side STL print
+preparation app at `/printprep.html`. It takes a model too big for the printer
+and produces sliceable plates: **import → auto split → snap joints → orient →
+chamfer → arrange → export**. Nothing is uploaded; the CSG kernel
+(manifold-3d WASM, vendored in `assets/vendor/manifold/`) and all analysis run
+in two web workers in the visitor's browser.
+
+The sources live in `tools/printprep/src/` (committed, not secret);
+`tools/printprep/build.mjs` bundles them with esbuild and encrypts the bundle
+with AES-256-GCM under PBKDF2 into `printprep.html`. The gate is real: without
+the password (in `.printprep-password`, gitignored) the page holds ciphertext,
+not a hidden app. `npm run build` in `tools/printprep/` rebuilds;
+`node --test test/` runs 32 tests including a pinned-equality suite proving the
+JS port of `evf_joint.py` matches the Python original to 5e-8 relative.
+
+Decisions that shaped it, in short: joints are Sheikh's support-free snap
+design ported verbatim, auto-sized per cut face from a distance field and
+placed only where three depth-slices per side confirm solid material; bed-fit
+is tested with joint protrusions included, because the male half stands proud
+of the cut plane; the split search runs on a decimated proxy in pure JS and
+real booleans execute once; export is Orca/Elegoo-flavoured 3MF
+(`Application = OrcaSlicer-1.2.0`, the one tag both slicers open without a
+dialog) with per-part overrides as per-object settings — no G-code is written,
+the slicer does that. The Fit slider snaps to five stops; print the coupon
+(`Print fit coupon`) once per material and keep the stop that snaps clean.
+
+Default printer preset: Elegoo Centauri Carbon 2, 256 mm cube, with the
+front-right purge chute excluded from packing. All presets editable.
