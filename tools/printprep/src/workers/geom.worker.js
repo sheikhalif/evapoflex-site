@@ -16,6 +16,14 @@ import { extractFeatures } from '../geom/features.js';
 import { fitPrimitives } from '../geom/primfit.js';
 import { BVH } from '../geom/bvh.js';
 import { overhangAudit } from '../geom/overhang.js';
+import { planSplit, manualTree } from '../plan/split.js';
+import { placeJoints } from '../plan/jointSites.js';
+import { protrusionBound } from '../plan/fitTest.js';
+import { decimateSoup } from '../geom/meshclip.js';
+import { buildNormalHist } from '../geom/normalHist.js';
+import { rankOrientations } from '../plan/orient.js';
+import { selectChains } from '../csg/chamfer.js';
+import { convexHull } from '../geom/hull2d.js';
 
 const parts = new Map();      // id -> analysed part
 
@@ -158,9 +166,121 @@ serve({
     };
   },
 
+  /**
+   * The whole split plan: beam search on a decimated proxy, then joint
+   * placement on every plane. Returns pure data - planes with tree ids, and a
+   * placement per plane - for the main thread to execute against the CSG
+   * worker.
+   */
+  async 'geom.plan'({ id, bed, sMax, fit, nozzle, manualPlanes }, ctx) {
+    const e = parts.get(id);
+    if (!e) throw new Error('unknown part');
+    const soup = soupOf(e.m);
+    const proxy = decimateSoup(soup, 24000);
+    ctx.progress('search', 0.1);
+    const prot = protrusionBound(sMax ?? 25, fit);
+    const analysis = { regions: e.reg.regions, totalArea: e.reg.regions.reduce((s, r) => s + r.area, 0) };
+
+    let plan;
+    if (manualPlanes && manualPlanes.length) {
+      // The user placed the planes; build the same tree shape by applying each
+      // plane to every piece it crosses, in order.
+      plan = manualTree(proxy, manualPlanes);
+    } else {
+      plan = planSplit(proxy, analysis, { bed, protrusion: prot, sMax, budgetMs: 8000 });
+    }
+    ctx.progress('joints', 0.6);
+
+    const placements = [];
+    for (const pl of plan.planes) {
+      const a = plan.all.get(pl.aId);
+      const b = plan.all.get(pl.bId);
+      if (!a || !b) { placements.push(null); continue; }
+      placements.push(placeJoints(a.soup, b.soup, pl, { nozzle: nozzle ?? 0.4, fit, sMax }));
+    }
+    return {
+      planes: plan.planes.map((p) => ({ n: p.n, d: p.d, parentId: p.parentId, aId: p.aId, bId: p.bId })),
+      placements: placements.map((p) => p && {
+        S: p.S, T: p.T, sites: p.sites, frame: p.frame, areaMm2: p.areaMm2,
+        hb: p.params.hb, depth: p.params.depth,
+      }),
+      log: plan.log,
+      fits: plan.pieces.every((p) => p.fit),
+      pieceCount: plan.pieces.length,
+    };
+  },
+
+  /** Orientation ranking for an analysed part. */
+  async 'geom.orient'({ id, bed, jointAxes, cutNormals, joints }) {
+    const e = parts.get(id);
+    if (!e) throw new Error('unknown part');
+    const hist = buildNormalHist(e.m.normal, e.m.area);
+    const size = [0, 1, 2].map((i) => e.m.bbox.max[i] - e.m.bbox.min[i]);
+    const totalArea = e.m.area.reduce((s, a) => s + a, 0);
+    const ranked = rankOrientations({
+      m: e.m, hist, size, totalArea,
+      analysis: { regions: e.reg.regions, cylinders: e.cylinders },
+      jointAxes: jointAxes || [], cutNormals: cutNormals || [], joints: joints || [],
+    }, bed);
+    return ranked.map((r) => ({
+      up: r.up, why: r.why, score: r.exact,
+      unsupportedMm2: Math.round(r.unsupportedMm2 * 10) / 10,
+      worstDeg: Math.round(r.worstDeg * 10) / 10,
+      contactMm2: Math.round(r.contactMm2), height: Math.round(r.height * 10) / 10,
+      needsSupport: r.needsSupport,
+    }));
+  },
+
+  /** Chamfer chain selection - the pure-geometry half of auto-chamfer. */
+  async 'geom.chamferSelect'({ id, opts }) {
+    const e = parts.get(id);
+    if (!e) throw new Error('unknown part');
+    const { chains, dropped } = selectChains(
+      e.feat.chains, e.feat.edges, e.m.verts, e.m.tris, e.m.normal, e.reg.regions, opts || {});
+    return {
+      dropped,
+      chains: chains.map((c) => ({ c: c.c, length: Math.round(c.length * 10) / 10, segments: c.segments })),
+    };
+  },
+
+  /** Convex footprint of the part in a given orientation, for packing. */
+  async 'geom.footprint'({ id, up }) {
+    const e = parts.get(id);
+    if (!e) throw new Error('unknown part');
+    const ref = Math.abs(up[0]) > 0.9 ? [0, 1, 0] : [1, 0, 0];
+    const u = unit3(cross3(up, ref)), v = cross3(up, u);
+    const { verts } = e.m;
+    const pts = [];
+    const stride = Math.max(1, Math.floor(verts.length / 3 / 800)) * 3;
+    for (let i = 0; i < verts.length; i += stride) {
+      pts.push([
+        verts[i] * u[0] + verts[i + 1] * u[1] + verts[i + 2] * u[2],
+        verts[i] * v[0] + verts[i + 1] * v[1] + verts[i + 2] * v[2],
+      ]);
+    }
+    let minH = Infinity;
+    for (let i = 0; i < verts.length; i += 3) {
+      const h = verts[i] * up[0] + verts[i + 1] * up[1] + verts[i + 2] * up[2];
+      if (h < minH) minH = h;
+    }
+    return { hull: convexHull(pts), u, v, minH };
+  },
+
   async 'geom.free'({ id }) { parts.delete(id); return true; },
   async 'geom.stats'() { return { parts: parts.size }; },
 });
+
+function soupOf(m) {
+  const out = new Float32Array(m.tris.length * 3);
+  for (let i = 0; i < m.tris.length; i++) {
+    const v = m.tris[i] * 3;
+    out[i * 3] = m.verts[v]; out[i * 3 + 1] = m.verts[v + 1]; out[i * 3 + 2] = m.verts[v + 2];
+  }
+  return out;
+}
+
+const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const unit3 = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 
 /** Region boundary as a flat coordinate array, outer loop only. */
 function outlineOf(e, region) {

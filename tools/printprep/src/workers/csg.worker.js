@@ -28,6 +28,30 @@ serve({
     } finally { arena.endScope(); }
   },
 
+  /**
+   * Split ONE solid by ONE plane. The main thread replays the planner's tree
+   * with these, keeping its own id map, so the plan and the real booleans stay
+   * in one-to-one correspondence.
+   */
+  async 'csg.splitOne'({ solidId, plane }) {
+    arena.beginScope();
+    try {
+      const [above, below] = arena.M(solidId).splitByPlane(plane.n, plane.d);
+      if (above.isEmpty() || below.isEmpty()) {
+        above.delete(); below.delete();
+        return { aId: null, bId: null };
+      }
+      const aId = arena.retain(arena.track(forceEval(above)));
+      const bId = arena.retain(arena.track(forceEval(below)));
+      arena.release(solidId);
+      return {
+        aId, bId,
+        aBbox: arena.M(aId).boundingBox(), bBbox: arena.M(bId).boundingBox(),
+        aVolume: arena.M(aId).volume(), bVolume: arena.M(bId).volume(),
+      };
+    } finally { arena.endScope(); }
+  },
+
   /** Split a solid by a sequence of planes into its final leaves. */
   async 'csg.splitTree'({ solidId, planes }, cx) {
     const { Manifold } = ctx();

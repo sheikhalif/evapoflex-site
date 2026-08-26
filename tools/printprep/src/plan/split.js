@@ -161,14 +161,20 @@ export function planSplit(rootSoup, analysis, opts) {
   const deadline = performance.now() + (opts.budgetMs ?? 6000);
   const log = [];
 
-  const mkPiece = (soup, cutFaces) => ({ soup, cutFaces, fit: null });
+  let nextId = 0;
+  const all = new Map();
+  const mkPiece = (soup, cutFaces) => {
+    const p = { id: nextId++, soup, cutFaces, fit: null };
+    all.set(p.id, p);
+    return p;
+  };
   const fitOf = (piece) => fitsWithJoints(fitPoints(piece.soup), piece.cutFaces, bed, prot, margin);
 
   const root = mkPiece(rootSoup, []);
   root.fit = fitOf(root);
   if (root.fit) {
     log.push('fits whole - no split needed');
-    return { planes: [], pieces: [root], log };
+    return { planes: [], pieces: [root], all, log };
   }
 
   let beam = [{ pieces: [root], planes: [], cost: 0 }];
@@ -176,7 +182,7 @@ export function planSplit(rootSoup, analysis, opts) {
 
   for (let depth = 0; depth < maxDepth; depth++) {
     const done = beam.find((s) => s.pieces.every((p) => p.fit));
-    if (done) { log.push(`solved at depth ${depth}, ${done.pieces.length} pieces`); return finish(done, log); }
+    if (done) { log.push(`solved at depth ${depth}, ${done.pieces.length} pieces`); return finish(done, log, all); }
     if (performance.now() > deadline) { log.push('budget hit - taking best partial'); break; }
 
     const next = [];
@@ -215,7 +221,13 @@ export function planSplit(rootSoup, analysis, opts) {
         pieces.splice(worst, 1, pa, pb);
         next.push({
           pieces,
-          planes: [...state.planes, { n: c.n, d: c.d, sTarget: c.sTarget, nJoints: c.nTargetJoints }],
+          // The tree structure travels with the plane: which piece it split and
+          // what the two children are called. Execution on the real solids
+          // replays exactly this, so the plan and the booleans cannot drift.
+          planes: [...state.planes, {
+            n: c.n, d: c.d, sTarget: c.sTarget, nJoints: c.nTargetJoints,
+            parentId: piece.id, aId: pa.id, bId: pb.id,
+          }],
           cost: state.cost + c.cost + 0.8,
         });
       }
@@ -228,11 +240,46 @@ export function planSplit(rootSoup, analysis, opts) {
   const best = beam.slice().sort((x, y) =>
     (y.pieces.filter((p) => p.fit).length - x.pieces.filter((p) => p.fit).length) || (x.cost - y.cost))[0];
   log.push(`partial plan: ${best.pieces.filter((p) => p.fit).length}/${best.pieces.length} pieces fit`);
-  return finish(best, log);
+  return finish(best, log, all);
 }
 
-function finish(state, log) {
-  return { planes: state.planes, pieces: state.pieces, log };
+function finish(state, log, all) {
+  return { planes: state.planes, pieces: state.pieces, all, log };
+}
+
+/**
+ * A split tree from user-placed planes: each plane is applied, in order, to
+ * every current piece it genuinely crosses. Same output shape as the search, so
+ * execution downstream cannot tell who chose the planes.
+ */
+export function manualTree(rootSoup, planes) {
+  let nextId = 0;
+  const all = new Map();
+  const mk = (soup, cutFaces) => { const p = { id: nextId++, soup, cutFaces, fit: true }; all.set(p.id, p); return p; };
+  let pieces = [mk(rootSoup, [])];
+  const outPlanes = [];
+  for (const pl of planes) {
+    const next = [];
+    for (const piece of pieces) {
+      const { a, b } = clipSoup(piece.soup, pl.n, pl.d);
+      if (a.length < 27 || b.length < 27) { next.push(piece); continue; }
+      const sec = sectionLoops(piece.soup, identityTris(piece.soup), pl.n, pl.d);
+      const boundary = sectionBoundary3D(sec);
+      const pa = mk(a, [...piece.cutFaces, { n: pl.n.map((v) => -v), boundary }]);
+      const pb = mk(b, [...piece.cutFaces, { n: pl.n.slice(), boundary }]);
+      outPlanes.push({ n: pl.n, d: pl.d, parentId: piece.id, aId: pa.id, bId: pb.id });
+      next.push(pa, pb);
+    }
+    pieces = next;
+  }
+  return { planes: outPlanes, pieces, all, log: [`manual: ${outPlanes.length} cuts, ${pieces.length} pieces`] };
+}
+
+function identityTris(soup) {
+  const n = soup.length / 3;
+  const t = new Uint32Array(n);
+  for (let i = 0; i < n; i++) t[i] = i;
+  return t;
 }
 
 function planeKey(p) {
