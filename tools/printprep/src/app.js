@@ -186,6 +186,18 @@ export async function boot({ workerSources, baseUrl }) {
 
   async function executePlan(plan) {
     const m = state.model;
+    // A re-split replaces everything downstream: the old parts' solids, their
+    // analyses, their scene objects, and any arrangement built on them. Leaving
+    // any of it behind is either a WASM leak or a stale plate that exports
+    // parts which no longer exist.
+    for (const p of state.parts) {
+      disposeGroup(p.group);
+      stage.world.remove(p.group);
+      geom.call('geom.free', { id: p.id });
+    }
+    if (state.parts.length) csg.call('csg.release', { solidIds: state.parts.map((p) => p.csgId) });
+    state.parts = []; state.joints = []; state.plates = [];
+    refreshExport();
     // Work on a copy so the original solid survives for a re-plan.
     const rootCopy = await csg.call('csg.transform', { solidId: m.csgId, matrix: IDENT16 });
     const idMap = new Map([[0, rootCopy.solidId]]);
@@ -925,10 +937,7 @@ export async function boot({ workerSources, baseUrl }) {
   }
 
   async function reexecute() {
-    // Tear down parts but keep the model and the plan.
-    for (const p of state.parts) { disposeGroup(p.group); stage.world.remove(p.group); geom.call('geom.free', { id: p.id }); }
-    csg.call('csg.release', { solidIds: state.parts.map((p) => p.csgId) });
-    state.parts = []; state.joints = []; state.plates = [];
+    // executePlan tears down the previous parts itself.
     try {
       await executePlan(state.plan);
       say('Re-stamped.');
