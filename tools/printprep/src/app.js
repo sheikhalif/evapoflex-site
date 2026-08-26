@@ -59,6 +59,9 @@ export async function boot({ workerSources, baseUrl }) {
   // ---------------------------------------------------------------- stage
   const stageEl = document.getElementById('stage');
   const stage = createStage(stageEl);
+  // A handle on the running tool, for the console and for automated checks.
+  // Read-only by convention; nothing in the app reads it back.
+  if (typeof window !== 'undefined') window.printPrep = { state, stage, geom, csg };
   buildBed(stage, state.bed, PRINTERS[state.printerKey].excludeArea);
   const clipPlane = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0);
   const clipping = [];    // filled when section is on
@@ -143,6 +146,9 @@ export async function boot({ workerSources, baseUrl }) {
     state.manualPlanes = []; state.cutMode = false;
     state.model = null; state.parts = []; state.joints = []; state.plan = null;
     state.plates = []; state.selected = null; state.view = 'model';
+    // Seams outlive their parts otherwise, and the joints card lists a dozen
+    // "? <-> ? · glue seam" rows for a model that is no longer loaded.
+    state.seams = []; state.plainSeams = 0; state.islandCount = 0;
     refreshParts(); refreshModelCard(); refreshActions(); refreshSelected(); refreshCuts();
   }
   function disposeGroup(g) {
@@ -162,6 +168,7 @@ export async function boot({ workerSources, baseUrl }) {
         id: m.geomId, bed: state.bed, sMax: state.sMax, fit: fit(),
         nozzle: printer().nozzle, manualPlanes: useManual,
       }, { onProgress: (p) => setProgress(0.05 + p.frac * 0.3) });
+      console.debug('[split plan]', plan.planes.length, 'planes;', plan.log);
       state.cutMode = false;
       for (const e of state.manualPlanes) e.helper.visible = false;
       refreshCuts();
@@ -175,23 +182,39 @@ export async function boot({ workerSources, baseUrl }) {
         setProgress(1);
         return;
       }
-      const missing = plan.placements.filter((p) => !p).length;
       await executePlan(plan);
       const bad = state.parts.filter((p) => p.summary.size.some((d, i) => d > [state.bed.x, state.bed.y, state.bed.z][i])).length;
+      const plain = state.plainSeams || 0;
+      const islands = state.islandCount || 0;
+      const isle = islands
+        ? ` ${islands} cut piece${islands === 1 ? '' : 's'} fell into separate lumps and ${islands === 1 ? 'was' : 'were'} listed separately.`
+        : '';
       if (!plan.fits && bad) {
         say(`${state.parts.length} parts, but ${bad} still exceed${bad === 1 ? 's' : ''} the printer - the search ran out of workable cuts (${plan.log[plan.log.length - 1]}). Add manual cuts for the red parts.`, true, 9000);
-      } else if (missing) {
-        say(`${state.parts.length} parts. ${missing} seam${missing === 1 ? ' has' : 's have'} no room for a snap joint (under 12 mm of clear material) - those are plain glue seams, shown without joint markers.`, true, 8000);
+      } else if (plain) {
+        say(`${state.parts.length} parts, ${state.joints.length} of ${state.seams.length} seams jointed. ${plain} seam${plain === 1 ? ' has' : 's have'} no room for a snap joint (under 12 mm of clear material) - ${plain === 1 ? 'it is a plain glue seam' : 'those are plain glue seams'}, shown without joint markers.${isle}`, true, 8000);
+      } else {
+        say(`${state.parts.length} parts, ${state.joints.length} jointed seam${state.joints.length === 1 ? '' : 's'}.${isle} Check them in Ghost view.`);
       }
       setProgress(1);
-      if (!missing && (plan.fits || !bad)) {
-        say(`${state.parts.length} parts, ${state.joints.length} joint face${state.joints.length === 1 ? '' : 's'}. Check them in Ghost view.`);
-      }
     } catch (e) {
       setProgress(0);
       say(e.message, true, 7000);
     }
   }
+
+  /**
+   * A seam's identity, stable across re-executions of the same plan.
+   *
+   * Component handles are minted fresh on every run, so "swap this joint" has
+   * to name the seam by where it is, not by which objects happened to hold it
+   * last time. The plan replays deterministically, so the plane it lies on plus
+   * the two pre-stamp box centres name it exactly.
+   */
+  const seamKey = (seam) => {
+    const c = (bb) => [0, 1, 2].map((k) => ((bb.min[k] + bb.max[k]) / 2).toFixed(1)).join(',');
+    return `${seam.planeIdx}|${c(seam.a.bbox)}|${c(seam.b.bbox)}`;
+  };
 
   async function executePlan(plan) {
     const m = state.model;
@@ -205,7 +228,7 @@ export async function boot({ workerSources, baseUrl }) {
       geom.call('geom.free', { id: p.id });
     }
     if (state.parts.length) csg.call('csg.release', { solidIds: state.parts.map((p) => p.csgId) });
-    state.parts = []; state.joints = []; state.plates = [];
+    state.parts = []; state.joints = []; state.plates = []; state.seams = [];
     refreshExport();
     // Work on a copy so the original solid survives for a re-plan.
     const rootCopy = await csg.call('csg.transform', { solidId: m.csgId, matrix: IDENT16 });
@@ -222,94 +245,167 @@ export async function boot({ workerSources, baseUrl }) {
       setProgress(0.4 + 0.15 * (i + 1) / plan.planes.length);
     }
 
-    // Stamp joints across every plane, between the leaf descendants that
-    // actually contain the sites.
-    const planeByParent = new Map(plan.planes.map((p) => [p.parentId, p]));
-    const descend = (planId, pt) => {
-      let cur = planId;
-      for (;;) {
-        const p = planeByParent.get(cur);
-        if (!p) return cur;
-        cur = (pt[0] * p.n[0] + pt[1] * p.n[1] + pt[2] * p.n[2] - p.d) >= 0 ? p.aId : p.bId;
+    // ---------------------------------------------------------------- pieces
+    // Every leaf becomes one or more COMPONENTS. A leaf whose material is in
+    // two disjoint lumps is not one part, and pretending otherwise produced
+    // "parts" that were two objects a metre apart sharing a colour, a row in
+    // the list and - worse - a single joint that bonded only one of them.
+    const leaves = [...new Set(plan.planes.flatMap((p) => [p.aId, p.bId]))].filter((id) => !parents.has(id));
+    let islands = 0;
+    const comps = [];
+    for (const leaf of leaves) {
+      const r = await csg.call('csg.decompose', { solidId: idMap.get(leaf) });
+      if (r.split) islands += r.parts.length - 1;
+      for (const c of r.parts) {
+        comps.push({ leaf, csgId: c.solidId, bbox: c.bbox, volume: c.volume, gid: `p${state.seq++}` });
       }
-    };
-
-    state.joints = [];
-    let jseq = 0;
-    for (let i = 0; i < plan.planes.length; i++) {
-      const pl = plan.planes[i], placed = plan.placements[i];
-      if (!placed) continue;
-      // A joint was placed on this plane's contact face when it had exactly two
-      // sides. Later cuts may have subdivided both sides, so different SITES on
-      // the same plane can now belong to different leaf pairs - stamping them
-      // all into one pair once put a joint bodily inside a third part and
-      // failed the containment audit. Group sites by the leaf pair that
-      // actually contains them, probing a little either side of the plane.
-      const groups = new Map();
-      let dropped = 0;
-      for (const site of placed.sites) {
-        // A site placed on the original, undivided face can end up within a
-        // joint's own footprint of a LATER cut. Its material-behind test knew
-        // nothing about that cut, so the stamped joint would poke out of the
-        // leaf - drop such sites and leave that patch of seam plain.
-        const nearOtherCut = plan.planes.some((q, qi) => qi !== i &&
-          Math.abs(q.n[0] * site.world[0] + q.n[1] * site.world[1] + q.n[2] * site.world[2] - q.d)
-            < placed.S / Math.SQRT2 + 2);
-        if (nearOtherCut) { dropped++; continue; }
-        const eps = 1.0;
-        const pa = site.world.map((v, k) => v + pl.n[k] * eps);
-        const pb = site.world.map((v, k) => v - pl.n[k] * eps);
-        const aLeaf = descend(pl.aId, pa);
-        const bLeaf = descend(pl.bId, pb);
-        const key = aLeaf + ':' + bLeaf;
-        if (!groups.has(key)) groups.set(key, { aLeaf, bLeaf, sites: [] });
-        groups.get(key).sites.push(site);
-      }
-      if (dropped) say(`${dropped} joint site${dropped === 1 ? '' : 's'} sat too close to another cut and ${dropped === 1 ? 'was' : 'were'} left as plain seam.`, false, 5000);
-      for (const g of groups.values()) {
-        const maleOn = state.plan?.swaps?.[i] ? 'A' : 'B';
-        const r = await csg.call('csg.stamp', {
-          aId: idMap.get(g.aLeaf), bId: idMap.get(g.bLeaf),
-          placement: { ...placed, sites: g.sites }, fit: fit(), maleOn,
-        });
-        if (!r.audit.ok) say(`A joint's containment audit failed (${(r.audit.maleContained * 100).toFixed(1)}% / ${(r.audit.femaleContained * 100).toFixed(1)}%) - inspect it in Ghost view.`, true, 8000);
-        idMap.set(g.aLeaf, r.aId);
-        idMap.set(g.bLeaf, r.bId);
-        state.joints.push({
-          id: `j${jseq++}`, planeIdx: i, aLeaf: g.aLeaf, bLeaf: g.bLeaf,
-          axis: r.meta.axis, S: placed.S, hb: r.meta.hb ?? placed.hb, depth: placed.depth,
-          sites: g.sites, frame: placed.frame, maleOn, audit: r.audit,
-        });
-      }
-      setProgress(0.55 + 0.15 * (i + 1) / plan.planes.length);
+      setProgress(0.55 + 0.05 * (leaves.indexOf(leaf) + 1) / leaves.length);
     }
 
-    // Materialise the leaves as parts.
-    const leafIds = [...idMap.keys()].filter((k) => !parents.has(k) || !plan.planes.some((p) => p.parentId === k));
-    const leaves = [...new Set(plan.planes.flatMap((p) => [p.aId, p.bId]))].filter((id) => !parents.has(id));
+    // Park each component's mesh in the geom worker so seams can be sectioned
+    // against real closed solids.
+    for (const c of comps) {
+      const mesh = await csg.call('csg.mesh', { solidId: c.csgId });
+      await geom.call('geom.stage', { id: c.gid, vertProperties: mesh.vertProperties, triVerts: mesh.triVerts });
+    }
+
+    // ---------------------------------------------------------------- seams
+    // A seam is a pair of components that face each other across one cut
+    // plane. Enumerating pairs - rather than planes - is what puts a joint on
+    // every place two parts actually meet: quartering a ring has four seams,
+    // not two, because plane X meets plane Y's halves twice over.
+    const parentOf = new Map();
+    for (const p of plan.planes) { parentOf.set(p.aId, p.parentId); parentOf.set(p.bId, p.parentId); }
+    const inSubtree = (leaf, node) => {
+      for (let c = leaf; ; c = parentOf.get(c)) {
+        if (c === node) return true;
+        if (!parentOf.has(c)) return false;
+      }
+    };
+    const span = (bbox, n) => {          // interval of n·x over the box
+      let lo = 0, hi = 0;
+      for (let k = 0; k < 3; k++) {
+        const a = n[k] * bbox.min[k], b = n[k] * bbox.max[k];
+        lo += Math.min(a, b); hi += Math.max(a, b);
+      }
+      return [lo, hi];
+    };
+    const TOUCH = 0.25;                  // mm: the cut face is exactly on the plane
+    const overlapsInPlane = (a, b, n) => {
+      // Compare the two boxes on the axes the plane does NOT run along. Boxes
+      // that only meet at a corner share no face worth jointing.
+      for (let k = 0; k < 3; k++) {
+        if (Math.abs(n[k]) > 0.5) continue;
+        const lo = Math.max(a.min[k], b.min[k]), hi = Math.min(a.max[k], b.max[k]);
+        if (hi - lo < 1) return false;
+      }
+      return true;
+    };
+
+    const seams = [];
+    for (let i = 0; i < plan.planes.length; i++) {
+      const pl = plan.planes[i];
+      const aSide = comps.filter((c) => inSubtree(c.leaf, pl.aId) && Math.abs(span(c.bbox, pl.n)[0] - pl.d) < TOUCH);
+      const bSide = comps.filter((c) => inSubtree(c.leaf, pl.bId) && Math.abs(span(c.bbox, pl.n)[1] - pl.d) < TOUCH);
+      for (const a of aSide) {
+        for (const b of bSide) {
+          if (!overlapsInPlane(a.bbox, b.bbox, pl.n)) continue;
+          seams.push({ planeIdx: i, plane: { n: pl.n, d: pl.d }, a, b });
+        }
+      }
+    }
+
+    // Site the joints on each seam from the real geometry. The other planes
+    // bounding either component are handed over as keep-out lines so a joint is
+    // never stamped across a neighbouring cut.
+    state.joints = [];
+    state.seams = seams;
+    let jseq = 0, plain = 0;
+    for (let s = 0; s < seams.length; s++) {
+      const seam = seams[s];
+      // Keep-outs: only the cuts that actually pass through one of these two
+      // components. A plane on the far side of the model draws a keep-out band
+      // across all of space, and including it would veto perfectly good sites
+      // on a seam it has nothing to do with.
+      const crosses = (q, bbox) => {
+        const [lo, hi] = span(bbox, q.n);
+        return lo - 1 < q.d && q.d < hi + 1;
+      };
+      // A plane at a different index can still be the SAME plane in space: the
+      // tree cuts each half of a quartered ring at y = 0 separately, so plane 1
+      // and plane 2 are geometrically identical. Excluding by index alone let
+      // plane 2's keep-out band cover the whole of plane 1's contact face, and
+      // both of the ring's side seams silently came back plain.
+      const coincident = (q) => {
+        const dp = q.n[0] * seam.plane.n[0] + q.n[1] * seam.plane.n[1] + q.n[2] * seam.plane.n[2];
+        if (Math.abs(Math.abs(dp) - 1) > 1e-3) return false;
+        return Math.abs(q.d - Math.sign(dp) * seam.plane.d) < 0.5;
+      };
+      const avoid = plan.planes
+        .filter((q, qi) => qi !== seam.planeIdx && !coincident(q) &&
+          (crosses(q, seam.a.bbox) || crosses(q, seam.b.bbox)))
+        .map((q) => ({ n: q.n, d: q.d }));
+      let placed = null;
+      try {
+        const r = await geom.call('geom.seamJoints', {
+          aId: seam.a.gid, bId: seam.b.gid, plane: seam.plane,
+          sMax: state.sMax, fit: fit(), nozzle: printer().nozzle, avoid,
+        });
+        placed = r?.placed || null;
+        seam.why = r?.why || null;
+      } catch (e) { placed = null; seam.why = e.message; }
+      seam.placement = placed;
+      if (!placed) { plain++; continue; }
+
+      const key = seamKey(seam);
+      const maleOn = state.plan?.swaps?.[key] ? 'A' : 'B';
+      const r = await csg.call('csg.stamp', {
+        aId: seam.a.csgId, bId: seam.b.csgId,
+        placement: placed, fit: fit(), maleOn,
+      });
+      if (!r.audit.ok) say(`A joint's containment audit failed (${(r.audit.maleContained * 100).toFixed(1)}% / ${(r.audit.femaleContained * 100).toFixed(1)}%) - inspect it in Ghost view.`, true, 8000);
+      seam.a.csgId = r.aId;
+      seam.b.csgId = r.bId;
+      state.joints.push({
+        id: `j${jseq++}`, seamKey: key, planeIdx: seam.planeIdx,
+        aComp: seam.a, bComp: seam.b,
+        axis: r.meta.axis, S: placed.S, hb: r.meta.hb ?? placed.hb, depth: placed.depth,
+        sites: placed.sites, frame: placed.frame, maleOn, audit: r.audit,
+      });
+      setProgress(0.6 + 0.1 * (s + 1) / seams.length);
+    }
+    state.plainSeams = plain;
+    state.islandCount = islands;
+
+    // ---------------------------------------------------------------- parts
     if (state.model) state.model.group.visible = false;
     state.parts = [];
     let pi = 0;
-    for (const leaf of leaves) {
-      const csgId = idMap.get(leaf);
-      const mesh = await csg.call('csg.mesh', { solidId: csgId });
-      const gid = `p${state.seq++}`;
+    for (const c of comps) {
+      const mesh = await csg.call('csg.mesh', { solidId: c.csgId });
+      const name = `Part ${pi + 1}`;
       const adopted = await geom.call('geom.adopt', {
-        id: gid, name: `Part ${pi + 1}`,
-        vertProperties: mesh.vertProperties, triVerts: mesh.triVerts,
+        id: c.gid, name, vertProperties: mesh.vertProperties, triVerts: mesh.triVerts,
       });
-      const part = mkPart(gid, csgId, `Part ${pi + 1}`, adopted, pi);
-      part.planLeaf = leaf;
+      const part = mkPart(c.gid, c.csgId, name, adopted, pi);
+      part.planLeaf = c.leaf;
+      part.volume = c.volume;
+      c.partId = part.id;
       state.parts.push(part);
       stage.world.add(part.group);
       pi++;
-      setProgress(0.7 + 0.25 * pi / leaves.length);
+      setProgress(0.7 + 0.25 * pi / comps.length);
     }
+    await geom.call('geom.unstage', { ids: comps.map((c) => c.gid) });
 
     // Joint <-> part links, then joint preview solids for the ghost/exploded views.
     for (const j of state.joints) {
-      j.aPartId = state.parts.find((p) => p.planLeaf === j.aLeaf)?.id;
-      j.bPartId = state.parts.find((p) => p.planLeaf === j.bLeaf)?.id;
+      j.aPartId = j.aComp.partId;
+      j.bPartId = j.bComp.partId;
+    }
+    for (const seam of seams) {
+      seam.aPartId = seam.a.partId;
+      seam.bPartId = seam.b.partId;
     }
     await buildJointPreviews();
     await orientAll();
@@ -587,11 +683,18 @@ export async function boot({ workerSources, baseUrl }) {
     const partsInfo = state.parts.map((p) => ({
       id: p.id, volume: p.summary?.bbox ? boxVol(p.summary.bbox) : 1,
       size: p.summary ? p.summary.size : [50, 50, 50],
+      bbox: p.summary?.bbox || null,
     }));
-    const jointsInfo = state.joints
-      .filter((j) => j.aPartId && j.bPartId)
-      .map((j) => ({ aId: j.aPartId, bId: j.bPartId, axis: j.axis, hb: j.hb }));
-    explodeMap = explodeVectors(partsInfo, jointsInfo);
+    // Every seam is an edge, jointed or not. A glue seam still means "these two
+    // came apart here", and the view is only honest if it opens along it.
+    const seamInfo = (state.seams || [])
+      .filter((s) => s.aPartId && s.bPartId)
+      .map((s) => ({
+        aId: s.aPartId, bId: s.bPartId,
+        axis: s.plane.n.slice(),
+        hb: state.joints.find((j) => j.aPartId === s.aPartId && j.bPartId === s.bPartId)?.hb || 0,
+      }));
+    explodeMap = explodeVectors(partsInfo, seamInfo);
     applyExplode();
   }
   function applyExplode() {
@@ -944,8 +1047,10 @@ export async function boot({ workerSources, baseUrl }) {
 
   function refreshJoints() {
     jointsCard.innerHTML = '';
-    jointsCard.append(el('div', { class: 'card-t' }, 'Joints ', el('span', { class: 'n' }, state.joints.length || '')));
-    if (!state.joints.length) {
+    const seamCount = (state.seams || []).length;
+    jointsCard.append(el('div', { class: 'card-t' }, 'Joints ',
+      el('span', { class: 'n' }, seamCount ? `${state.joints.length}/${seamCount} seams` : '')));
+    if (!state.joints.length && !seamCount) {
       jointsCard.append(el('div', { class: 'empty' }, 'Joints appear after a split.'));
       return;
     }
@@ -960,6 +1065,19 @@ export async function boot({ workerSources, baseUrl }) {
         ok === false ? el('span', { class: 'warn', title: 'containment audit failed' }, '▲') : null,
         button('Swap', () => swapJoint(j), 'g sm')));
     }
+    // Seams that took no joint are still seams. Listing them - with the reason
+    // the placement gave up - is the difference between "the tool found two
+    // joints" and "the tool found four seams and could only joint two of them,
+    // here is why".
+    for (const s of (state.seams || [])) {
+      if (s.placement) continue;
+      const a = state.parts.find((p) => p.id === s.aPartId), b = state.parts.find((p) => p.id === s.bPartId);
+      jointsCard.append(el('div', { class: 'row', style: 'min-height:22px;align-items:flex-start' },
+        el('span', { class: 'lbl w', style: 'color:rgba(0,0,0,.35)' }, 'plain'),
+        el('span', { style: 'flex:1;font-size:10px;color:rgba(0,0,0,.5)' },
+          `${a?.name ?? '?'} ↔ ${b?.name ?? '?'} · glue seam`,
+          s.why ? el('div', { style: 'font-size:9px;color:rgba(0,0,0,.32);margin-top:2px;line-height:1.4' }, s.why) : null)));
+    }
     jointsCard.append(el('div', { class: 'note' },
       'Ghost view shows every joint inside its part - amber male, violet female. Swap re-runs the split with the halves exchanged.'));
   }
@@ -967,7 +1085,9 @@ export async function boot({ workerSources, baseUrl }) {
   async function swapJoint(j) {
     if (!state.plan) return;
     state.plan.swaps = state.plan.swaps || {};
-    state.plan.swaps[j.planeIdx] = !state.plan.swaps[j.planeIdx];
+    // Keyed by seam, not by plane: one plane can carry several independent
+    // seams and swapping one of them must not flip the others.
+    state.plan.swaps[j.seamKey] = !state.plan.swaps[j.seamKey];
     say('Re-cutting with the joint swapped…');
     await reexecute();
   }

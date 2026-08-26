@@ -20,6 +20,30 @@ import { fitsWithJoints, fitPoints } from './fitTest.js';
 
 const SQRT2 = Math.SQRT2;
 
+/**
+ * A lower bound on how many more cuts a set of pieces needs.
+ *
+ * Each piece needs at least enough parallel divisions per axis to bring its
+ * extent under the printable span, and a piece that splits into m parts took at
+ * least m - 1 cuts. It ignores shape entirely - a disc is treated as its
+ * bounding box - which is exactly what a bound should do: never overestimate.
+ */
+function remainingCuts(pieces, bed, margin, prot) {
+  const lim = [bed.x - 2 * margin - prot, bed.y - 2 * margin - prot, bed.z - margin];
+  let n = 0;
+  for (const p of pieces) {
+    if (p.fit) continue;
+    const b = soupBounds(p.soup);
+    let parts = 1;
+    for (let k = 0; k < 3; k++) {
+      if (!(lim[k] > 1)) continue;
+      parts *= Math.max(1, Math.ceil((b.max[k] - b.min[k]) / lim[k]));
+    }
+    n += parts - 1;
+  }
+  return n;
+}
+
 /** Local minima of an area profile, plus midpoint, as candidate offsets. */
 function candidateOffsets(profile, maxPer = 5) {
   const { offsets, areas } = profile;
@@ -216,7 +240,6 @@ export function planSplit(rootSoup, analysis, opts) {
   const margin = opts.margin ?? 2;
   const ctx = { sMin: opts.sMin ?? 12, sMax: opts.sMax ?? 25, margin: opts.jointMargin ?? 1.5, rootSoup };
   const beamWidth = opts.beamWidth ?? 4;
-  const maxDepth = opts.maxParts ?? 16;
   const deadline = performance.now() + (opts.budgetMs ?? 6000);
   const log = [];
 
@@ -238,6 +261,18 @@ export function planSplit(rootSoup, analysis, opts) {
 
   let beam = [{ pieces: [root], planes: [], cost: 0 }];
   const seen = new Set();
+
+  // How many expansions to allow. A fixed 16 was fine while every expansion was
+  // one cut of a part that needed a handful, but it is not a property of the
+  // search - it is a property of the MODEL. A 967 mm wheel on a 256 mm bed needs
+  // fifteen cuts before it can fit at all, so a sixteen-iteration cap left it
+  // permanently two pieces short and reported that as "ran out of workable
+  // cuts", which sounds like the geometry defeated it rather than the loop
+  // bound. The budget in milliseconds is the real limit; this is only a
+  // backstop against a pathological model.
+  const need = remainingCuts([root], bed, margin, prot);
+  const maxDepth = opts.maxParts ?? Math.min(400, Math.max(16, 2 * need + 8));
+  log.push(`needs at least ${need} cuts; allowing ${maxDepth} expansions`);
 
   for (let depth = 0; depth < maxDepth; depth++) {
     const done = beam.find((s) => s.pieces.every((p) => p.fit));
@@ -278,10 +313,87 @@ export function planSplit(rootSoup, analysis, opts) {
       const anyOver = overflowAxes.some(Boolean);
       const cands = candidatePlanes(piece, analysis, { ...opts, overflowAxes: anyOver ? overflowAxes : null });
 
+      // ---------------------------------------------------------- slab move
+      //
+      // A piece more than twice the bed along an axis needs a row of parallel
+      // cuts, and finding them one expansion at a time is how the search dies:
+      // a 967 mm wheel on a 256 mm bed needs a 4 x 4 grid, which is fifteen
+      // sequential expansions, each re-clipping a 412k-triangle soup. It ran
+      // out of budget at six pieces and reported that it could not split the
+      // model - when the answer is the one any engineer writes down
+      // immediately: divide the long axis into equal printable slabs.
+      //
+      // So that move is offered directly. It is still a chain of ordinary
+      // binary cuts - the plan format and the executor do not change - but the
+      // whole chain is proposed in ONE expansion.
+      const slabStates = () => {
+        const out = [];
+        for (let k = 0; k < 3; k++) {
+          const ext = pb.max[k] - pb.min[k];
+          // Usable span per slab: the bed less its margins, less the joint boss
+          // that will stand proud of each vertical cut face.
+          const lim = [bed.x, bed.y, bed.z][k] - 2 * margin - (k === 2 ? 0 : prot);
+          if (!(lim > 1) || ext <= 2 * lim) continue;   // one cut is enough - leave it to the normal move
+          const nSlabs = Math.ceil(ext / lim);
+          if (nSlabs > 12) continue;                    // absurd; something else is wrong
+          const step = ext / nSlabs;
+          const n = [0, 0, 0]; n[k] = 1;
+          let cur = piece, ok = true;
+          const planes = state.planes.slice();
+          const made = [];
+          let cost = state.cost;
+          for (let i = 1; i < nSlabs && ok; i++) {
+            const d = pb.min[k] + step * i;
+            const c = scorePlane(cur, { n, d }, { ...ctx, allowJointless: true });
+            if (c.cost === Infinity) { ok = false; break; }
+            const rawB = sectionBoundary3D(c.section);
+            const inside = (pc) => (pt) => pc.halfspaces.every((h) =>
+              (h.n[0] * pt[0] + h.n[1] * pt[1] + h.n[2] * pt[2] - h.d) * h.sign >= -1);
+            const boundary = cur.halfspaces.length ? rawB.filter(inside(cur)) : rawB;
+            const fa = { n: n.map((v) => -v), boundary, plane: { n, d }, jointless: !!c.jointless };
+            const fb = { n: n.slice(), boundary, plane: { n, d }, jointless: !!c.jointless };
+            const above = mkPiece(c.a, [...cur.cutFaces, fa], [...cur.halfspaces, { n, d, sign: 1 }]);
+            const below = mkPiece(c.b, [...cur.cutFaces, fb], [...cur.halfspaces, { n, d, sign: -1 }]);
+            planes.push({
+              n, d, sTarget: c.sTarget, nJoints: c.nTargetJoints, jointless: !!c.jointless,
+              parentId: cur.id, aId: above.id, bId: below.id,
+            });
+            cost += c.cost + 0.8;
+            below.fit = fitOf(below);
+            made.push(below);       // everything under this plane is a finished slab
+            cur = above;            // keep cutting what is left above it
+          }
+          if (!ok || !made.length) continue;
+          // Slab moves need the same duplicate suppression as single cuts. Without
+          // it the beam filled with four copies of the same configuration - the
+          // log showed one piece slabbed eight times over - and the budget went
+          // on re-deriving an answer already in hand.
+          const key = planes.map((p) => p.parentId + '@' + planeKey(p)).sort().join('|');
+          if (useDedupe && seen.has(key)) continue;
+          seen.add(key);
+          cur.fit = fitOf(cur);
+          made.push(cur);
+          const pieces = state.pieces.slice();
+          pieces.splice(worst, 1, ...made);
+          out.push({ pieces, planes, cost });
+        }
+        return out;
+      };
+      const slabs = slabStates();
+      next.push(...slabs);
+
+      // When a slab move exists, the piece is more than twice the bed on some
+      // axis and NO single cut can make it fit. Scoring the full candidate set
+      // anyway - two dozen clips of a 412k-triangle soup, every one of them a
+      // dead end - is exactly where the budget went on the real wheel. Keep
+      // only the guaranteed mid-box fallbacks so the search still has an
+      // alternative if the slabs turn out badly.
+      const useCands = slabs.length ? cands.filter((c) => c.why === 'fallback' || c.why === 'mid-axis') : cands;
+
       const scoreAll = (allowJointless) => {
         const out = [];
         const c2 = allowJointless ? { ...ctx, allowJointless: true } : ctx;
-        for (const c of cands) {
+        for (const c of useCands) {
           const s = scorePlane(piece, c, c2);
           if (s.cost === Infinity) continue;
           // Refuse slivers here too, not only in manual mode: a shaving cannot
@@ -346,13 +458,34 @@ export function planSplit(rootSoup, analysis, opts) {
     }
 
     if (!next.length) { log.push('no expansions possible'); break; }
-    next.sort((x, y) => x.cost - y.cost);
+    // Rank by the total number of cuts the state is heading for: the ones it has
+    // already made plus a lower bound on the ones it still needs. Two rankings
+    // were tried and both were wrong. Pure accumulated cost punished the slab
+    // move for laying three planes at once, so it was pruned before its pieces
+    // could pay off. Counting pieces that still do not fit was worse - a slab
+    // move turns one oversize piece into four (still oversize until the
+    // perpendicular pass) while a single cut makes two, so the move that
+    // actually advances the plan always looked like the one falling behind.
+    //
+    // A lower bound is honest about both: it does not care how the cuts are
+    // grouped, only how many remain, and among states heading for the same
+    // total it prefers the one with more of them already banked - which is the
+    // slab move, and the cheap one to evaluate.
+    const total = (s) => s.planes.length + remainingCuts(s.pieces, bed, margin, prot);
+    next.sort((x, y) => (total(x) - total(y)) ||
+      (remainingCuts(x.pieces, bed, margin, prot) - remainingCuts(y.pieces, bed, margin, prot)) ||
+      (x.cost - y.cost));
     beam = next.slice(0, beamWidth);
   }
 
   const best = beam.slice().sort((x, y) =>
     (y.pieces.filter((p) => p.fit).length - x.pieces.filter((p) => p.fit).length) || (x.cost - y.cost))[0];
   log.push(`partial plan: ${best.pieces.filter((p) => p.fit).length}/${best.pieces.length} pieces fit`);
+  for (const p of best.pieces) {
+    if (p.fit) continue;
+    const b = soupBounds(p.soup);
+    log.push(`  oversize piece ${p.id}: ${[0, 1, 2].map((k) => (b.max[k] - b.min[k]).toFixed(0)).join(' x ')} mm, ${p.cutFaces.length} cut faces`);
+  }
   return finish(best, log, all);
 }
 

@@ -25,8 +25,21 @@ import { selectChains } from '../csg/chamfer.js';
 import { convexHull } from '../geom/hull2d.js';
 
 const parts = new Map();      // id -> analysed part
+const staged = new Map();     // id -> raw soup, held only long enough to site joints
 
 const TRI_LIMIT = 2_000_000;
+
+/** Indexed mesh -> unindexed soup, the form every section routine wants. */
+function soupFromIndexed(vertProperties, triVerts) {
+  const soup = new Float32Array(triVerts.length * 3);
+  for (let i = 0; i < triVerts.length; i++) {
+    const v = triVerts[i] * 3;
+    soup[i * 3] = vertProperties[v];
+    soup[i * 3 + 1] = vertProperties[v + 1];
+    soup[i * 3 + 2] = vertProperties[v + 2];
+  }
+  return soup;
+}
 
 function analyse(soup, id, name, ctx) {
   ctx?.progress('weld', 0.1);
@@ -112,13 +125,55 @@ serve({
     };
   },
 
+  /**
+   * Park a component's raw mesh for seam work.
+   *
+   * Joint siting needs sections through both sides of a seam, but nothing else
+   * an analysis provides - no BVH, no regions, no feature edges. Those cost
+   * real time per part and the geometry is about to change anyway when the
+   * joints are stamped into it, so the full analysis waits until after
+   * stamping and this holds just the soup.
+   */
+  async 'geom.stage'({ id, vertProperties, triVerts }) {
+    staged.set(id, soupFromIndexed(vertProperties, triVerts));
+    return { ok: true };
+  },
+
+  async 'geom.unstage'({ ids }) { for (const id of ids) staged.delete(id); return true; },
+
+  /**
+   * Site the joints on ONE seam, between two real post-cut components.
+   *
+   * This deliberately runs after the booleans rather than during the plan. The
+   * planner works on pieces clipped out of a proxy: they are open where earlier
+   * cuts passed, so sections through them do not close and the contact region
+   * has to be reconstructed by masking the root against a list of halfspaces.
+   * A component that came back from Manifold is a closed solid, so its sections
+   * are simply true - what the section says is material IS material, including
+   * everywhere a neighbouring cut took some away. That removes the guesswork
+   * that used to leave outer seams unjointed.
+   */
+  async 'geom.seamJoints'({ aId, bId, plane, sMin, sMax, fit, nozzle, avoid }) {
+    const soupA = staged.get(aId) || (parts.has(aId) ? soupOf(parts.get(aId).m) : null);
+    const soupB = staged.get(bId) || (parts.has(bId) ? soupOf(parts.get(bId).m) : null);
+    if (!soupA || !soupB) throw new Error('seam side not staged');
+    const report = {};
+    const p = placeJoints(soupA, soupB, plane, {
+      nozzle: nozzle ?? 0.4, fit, sMax, sMin, avoid: avoid || [], report,
+    });
+    if (!p) return { placed: null, why: report.why || 'no joint fits this face' };
+    return {
+      placed: {
+        S: p.S, T: p.T, sites: p.sites, frame: p.frame,
+        areaMm2: p.areaMm2, lobeCount: p.lobeCount,
+        hb: p.params.hb, depth: p.params.depth,
+      },
+    };
+  },
+
   /** Register an already-analysed mesh (a part that came back from a boolean). */
   async 'geom.adopt'({ id, name, vertProperties, triVerts }, ctx) {
-    const soup = new Float32Array(triVerts.length * 3);
-    for (let i = 0; i < triVerts.length; i++) {
-      const v = triVerts[i] * 3;
-      soup[i * 3] = vertProperties[v]; soup[i * 3 + 1] = vertProperties[v + 1]; soup[i * 3 + 2] = vertProperties[v + 2];
-    }
+    const soup = soupFromIndexed(vertProperties, triVerts);
     const e = analyse(soup, id, name, ctx);
     const r = renderMesh(e.m);
     ctx.transfer([r.pos.buffer, r.nrm.buffer, e.feat.segs.buffer.slice(0)]);
@@ -182,7 +237,21 @@ serve({
     // import cap the full soup costs seconds, and it is CORRECT.
     const proxy = soupOf(e.m);
     ctx.progress('search', 0.1);
-    const prot = protrusionBound(sMax ?? 25, fit);
+
+    // How much room to reserve for a joint boss standing proud of a cut face.
+    //
+    // A square joint of side S needs S/sqrt(2) + margin of clearance from the
+    // face's edge in every direction, so a face only t thick can host one at
+    // all when t >= 2*(sMin/sqrt(2) + margin) - about 20 mm for the 12 mm
+    // minimum joint. Reserving the worst-case boss on a part thinner than that
+    // is reserving room for something that can never be stamped: on the 10 mm
+    // EEDX wheel it shrank every printable slab from 252 mm to 193 mm and asked
+    // for a 5 x 5 grid where 4 x 4 does the job.
+    const mSize = [0, 1, 2].map((i) => e.m.bbox.max[i] - e.m.bbox.min[i]);
+    const jointMargin = Math.max(1.5, 2 * (nozzle ?? 0.4));
+    const thinnest = Math.min(...mSize);
+    const canJoint = thinnest >= 2 * (12 / Math.SQRT2 + jointMargin);
+    const prot = canJoint ? protrusionBound(sMax ?? 25, fit) : 0;
     const analysis = { regions: e.reg.regions, totalArea: e.reg.regions.reduce((s, r) => s + r.area, 0) };
 
     let plan;
@@ -293,7 +362,7 @@ serve({
     return { hull: convexHull(pts), u, v, minH };
   },
 
-  async 'geom.free'({ id }) { parts.delete(id); return true; },
+  async 'geom.free'({ id }) { parts.delete(id); staged.delete(id); return true; },
   async 'geom.stats'() { return { parts: parts.size }; },
 });
 

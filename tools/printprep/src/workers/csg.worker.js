@@ -8,6 +8,7 @@ import { initManifold, ctx, solidFromMesh, forceEval } from '../csg/manifoldCtx.
 import * as arena from '../csg/arena.js';
 import { meshOut, transfersOf, soupToMesh } from '../csg/convert.js';
 import { makeJoint, params as jointParams } from '../csg/joint.js';
+import { makeSeamCoupon, makeSeamPair, seamParams } from '../csg/seamJoints.js';
 import { stampJoints } from '../csg/jointStamp.js';
 import { chamferChains } from '../csg/chamfer.js';
 import { writeSTL } from '../geom/stl.js';
@@ -91,6 +92,43 @@ serve({
     } finally { arena.endScope(); }
   },
 
+  /**
+   * Split a solid into its connected components.
+   *
+   * A single plane can leave a piece whose material is in several disjoint
+   * lumps: cut the prongs off a fork and the upper piece is two separate
+   * prongs, cut a ring twice and the middle piece is two separate arcs.
+   * Manifold is happy to hold that as one solid - it is a legal, closed,
+   * two-shelled manifold - but it is not one printable object, it cannot be
+   * jointed as one, and calling it "Part 3" in the list is a lie the user
+   * only discovers on the plate.
+   *
+   * So every leaf goes through here and a part always means one lump you
+   * could pick up.
+   */
+  async 'csg.decompose'({ solidId }) {
+    arena.beginScope();
+    try {
+      const comps = arena.M(solidId).decompose();
+      // One component is the common case; hand back the original handle rather
+      // than a copy so the caller's id stays valid and nothing is reallocated.
+      if (comps.length <= 1) {
+        for (const c of comps) c.delete();
+        const m = arena.M(solidId);
+        return { parts: [{ solidId, volume: m.volume(), bbox: m.boundingBox() }], split: false };
+      }
+      const out = [];
+      for (const c of comps) {
+        const id = arena.retain(arena.track(forceEval(c)));
+        out.push({ solidId: id, volume: c.volume(), bbox: c.boundingBox() });
+      }
+      // The multi-shell parent is superseded by its components.
+      arena.release(solidId);
+      out.sort((p, q) => q.volume - p.volume);
+      return { parts: out, split: true };
+    } finally { arena.endScope(); }
+  },
+
   /** Stamp a joint pair across one plane between two pieces. */
   async 'csg.stamp'({ aId, bId, placement, fit, maleOn }) {
     arena.beginScope();
@@ -128,6 +166,58 @@ serve({
       male.delete(); female.delete();
       return { male: m, female: f, params };
     } finally { arena.endScope(); }
+  },
+
+  /**
+   * A coupon of seam-profile joints in one bar of stock, for printing and
+   * trying by hand. Returns the mesh plus what each variant actually resolved
+   * to, since the stock caps the tab and the caller should see the real numbers
+   * rather than what it asked for.
+   */
+  async 'csg.seamCoupon'({ variants, stock, opts }, cx) {
+    arena.beginScope();
+    try {
+      const { solid, variants: made } = makeSeamCoupon(variants, stock, opts || {});
+      const mesh = meshOut(solid);
+      solid.delete();
+      cx.transfer(transfersOf(mesh));
+      return { mesh, variants: made };
+    } finally { arena.endScope(); }
+  },
+
+  /**
+   * Does the pair actually go together?
+   *
+   * makeSeamPair leaves the halves in their mated position, so the volume they
+   * share is the interference. With the detents off that has to be zero or the
+   * joint does not assemble at all; with them on it should be just the balls,
+   * which is the snap doing its job. Anything else means the clearance is not
+   * reaching where it is needed.
+   */
+  async 'csg.seamFit'({ type, stock, opts }) {
+    arena.beginScope();
+    try {
+      const { male, female, params } = makeSeamPair(type, stock, opts || {});
+      // `insertZ` lifts the male part-way out along the assembly direction. At
+      // rest a snap must be a clearance fit or it never seats; the interference
+      // that makes it a snap happens on the way in, so measuring only the mated
+      // position proves nothing about whether a detent is doing anything.
+      const lifted = (opts && opts.insertZ) ? male.translate([0, 0, opts.insertZ]) : male;
+      const both = lifted.intersect(female);
+      if (lifted !== male) lifted.delete();
+      const r = {
+        interferenceMm3: both.volume(),
+        maleMm3: male.volume(), femaleMm3: female.volume(),
+        detentR: params.detentR, detents: params.detent,
+      };
+      both.delete(); male.delete(); female.delete();
+      return r;
+    } finally { arena.endScope(); }
+  },
+
+  /** Resolve seam-joint dimensions for some stock, without building anything. */
+  async 'csg.seamParams'({ type, stock, opts }) {
+    return seamParams(type, stock, opts || {});
   },
 
   async 'csg.mesh'({ solidId }, cx) {

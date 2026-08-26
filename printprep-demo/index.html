@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>Print Prep — demo shell</title>
+<link rel="icon" type="image/png" href="../assets/images/favicon.png">
+<script type="importmap">
+{ "imports": {
+  "three": "../assets/vendor/three/three.module.min.js",
+  "three/addons/controls/OrbitControls.js": "../assets/vendor/three/OrbitControls.js"
+} }
+</script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Verdana,Geneva,sans-serif;color:#1a1e2a;background:#f5f4f0;overflow:hidden;-webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:Verdana,Geneva,sans-serif;font-weight:400}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(45,124,181,0.3);border-radius:3px}
+.nz{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:0.035;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+
+/* ---------------------------------------------------------------- nav */
+.nv{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;
+    padding:10px 20px;background:rgba(245,244,240,0.92);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+    border-bottom:1px solid rgba(45,124,181,0.12);height:48px}
+.nv-logo{display:flex;align-items:center;gap:8px;text-decoration:none;font-weight:600;font-size:16px;color:#2d7cb5;letter-spacing:-0.02em}
+.nv-mid{display:flex;align-items:center;gap:10px}
+.nv-title{font-size:10px;font-weight:600;letter-spacing:0.2em;text-transform:uppercase;color:rgba(0,0,0,0.35)}
+.nv-right{display:flex;align-items:center;gap:14px}
+.nv-link{font-size:11px;font-weight:500;letter-spacing:0.05em;text-transform:uppercase;color:rgba(0,0,0,0.45);
+         text-decoration:none;background:none;border:none;font-family:inherit;cursor:pointer;transition:color .3s}
+.nv-link:hover{color:#2d7cb5}
+
+/* ---------------------------------------------------------------- app frame */
+#pp{position:fixed;inset:48px 0 0 0;display:none;grid-template-columns:264px 1fr 288px;gap:0;z-index:10}
+#pp.on{display:grid}
+.pane{background:rgba(255,255,255,0.55);backdrop-filter:blur(12px);overflow-y:auto;overflow-x:hidden;
+      display:flex;flex-direction:column;gap:8px;padding:12px 12px 40px}
+.pane-l{border-right:1px solid rgba(45,124,181,0.12)}
+.pane-r{border-left:1px solid rgba(45,124,181,0.12)}
+#stage{position:relative;background:#eeeee8;min-width:0}
+/* The canvas is taken out of flow. renderer.setSize(w,h,false) writes only the
+   canvas *attributes*, which on a 2x display are twice the CSS size; left in
+   flow with height:100%, that intrinsic height inflates the grid row and the
+   ResizeObserver then ratchets the stage past the bottom of the window. */
+#stage canvas{display:block;position:absolute;inset:0;width:100%;height:100%}
+
+/* ---------------------------------------------------------------- controls, after the index.html configurator */
+.card{background:rgba(255,255,255,0.62);border:1px solid rgba(0,0,0,0.06);border-radius:10px;padding:11px 14px;position:relative}
+.card.flush{padding:0;overflow:hidden}
+.card-t{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#2d7cb5;
+        margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:6px}
+.card-t .n{color:rgba(0,0,0,0.28);font-weight:600;letter-spacing:.5px}
+.row{display:flex;align-items:center;gap:6px;min-height:26px}
+.row+.row{margin-top:3px}
+.lbl{width:104px;flex-shrink:0;font-size:11px;color:rgba(0,0,0,0.5);display:flex;align-items:center;gap:5px}
+.lbl.w{width:74px}
+.info{width:14px;height:14px;border-radius:50%;border:1px solid rgba(0,0,0,0.15);display:inline-flex;align-items:center;
+      justify-content:center;font-size:8px;color:rgba(0,0,0,0.3);cursor:help;position:relative;flex-shrink:0}
+.info:hover .tip{display:block}
+.tip{display:none;position:absolute;top:50%;right:calc(100% + 10px);transform:translateY(-50%);width:210px;padding:10px 12px;
+     background:#fff;color:rgba(0,0,0,0.7);font-size:11px;line-height:1.45;border-radius:8px;border:1px solid rgba(0,0,0,0.08);
+     z-index:300;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,0.12);white-space:normal;text-align:left}
+.pane-l .tip{right:auto;left:calc(100% + 10px)}
+input[type=range]{flex:1;min-width:0;height:3px;accent-color:#2d7cb5;cursor:pointer;background:rgba(45,124,181,0.12);
+                  border-radius:2px;-webkit-appearance:none;appearance:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:#2d7cb5;
+                                        cursor:pointer;border:2px solid #f5f4f0}
+input[type=number],input[type=text],select{height:24px;background:rgba(255,255,255,0.8);border:1px solid rgba(0,0,0,0.1);
+    border-radius:5px;padding:0 6px;font-size:11px;font-family:Verdana,Geneva,sans-serif;color:#1a1e2a}
+input[type=number]{width:56px;text-align:right}
+select{flex:1;min-width:0;cursor:pointer}
+input:focus,select:focus{outline:none;border-color:rgba(45,124,181,0.4)}
+.unit{width:24px;font-size:10px;color:rgba(0,0,0,0.35);flex-shrink:0}
+.chk{display:flex;align-items:center;gap:7px;font-size:11px;color:rgba(0,0,0,0.55);cursor:pointer;user-select:none}
+.chk input{accent-color:#2d7cb5;cursor:pointer;width:13px;height:13px}
+.btn{padding:8px 14px;border-radius:60px;font-size:10px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;
+     border:none;cursor:pointer;font-family:Verdana,Geneva,sans-serif;transition:all .25s;background:#2d7cb5;color:#fff;white-space:nowrap}
+.btn:hover:not(:disabled){background:#4a9fd4;box-shadow:0 6px 22px rgba(45,124,181,0.25)}
+.btn:disabled{opacity:.35;cursor:default;box-shadow:none}
+.btn.g{background:transparent;color:#2d7cb5;border:1.5px solid rgba(45,124,181,0.3)}
+.btn.g:hover:not(:disabled){border-color:#2d7cb5;background:rgba(45,124,181,0.06);box-shadow:none}
+.btn.sm{padding:5px 11px;font-size:9px;letter-spacing:.05em}
+.btn.wide{width:100%;justify-content:center}
+.btnrow{display:flex;gap:6px;flex-wrap:wrap}
+
+/* segmented toggle, from the configurator's preset buttons */
+.seg{display:flex;background:rgba(0,0,0,0.04);border-radius:7px;padding:2px;gap:2px}
+.seg button{flex:1;padding:5px 6px;border-radius:5px;font-size:10px;font-weight:600;border:none;cursor:pointer;
+            font-family:Verdana,Geneva,sans-serif;background:transparent;color:rgba(0,0,0,0.4);transition:all .15s;white-space:nowrap}
+.seg button.on{background:rgba(45,124,181,0.22);color:#2d7cb5}
+.seg button:hover:not(.on){color:rgba(0,0,0,0.65)}
+
+/* stepped slider with tick labels, for the joint Fit control */
+.steps{display:flex;justify-content:space-between;margin:5px 2px 0;font-size:8px;letter-spacing:.04em;
+       text-transform:uppercase;color:rgba(0,0,0,0.25)}
+.steps span{cursor:pointer;transition:color .2s;flex:1;text-align:center}
+.steps span:first-child{text-align:left}.steps span:last-child{text-align:right}
+.steps span.on{color:#2d7cb5;font-weight:700}
+
+/* part list */
+.plist{display:flex;flex-direction:column}
+.pitem{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;border-bottom:1px solid rgba(0,0,0,0.045);
+       transition:background .15s;font-size:11px}
+.pitem:last-child{border-bottom:none}
+.pitem:hover{background:rgba(45,124,181,0.07)}
+.pitem.sel{background:rgba(45,124,181,0.14)}
+.pitem .sw{width:9px;height:9px;border-radius:2px;flex-shrink:0}
+.pitem .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:rgba(0,0,0,0.7)}
+.pitem .dim{font-size:9px;color:rgba(0,0,0,0.3);white-space:nowrap;font-variant-numeric:tabular-nums}
+.pitem .warn{color:#b5432d;font-size:11px}
+
+/* stat strip */
+.stats{display:flex;gap:14px;flex-wrap:wrap}
+.stat{min-width:56px}
+.stat-k{font-size:8px;color:rgba(0,0,0,0.32);text-transform:uppercase;letter-spacing:.5px}
+.stat-v{font-size:14px;font-weight:700;line-height:1.25;font-variant-numeric:tabular-nums}
+.stat-v .u{font-size:9px;font-weight:400;color:rgba(0,0,0,0.3);margin-left:2px}
+
+/* stage overlays */
+.drop{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+      text-align:center;color:rgba(0,0,0,0.35);font-size:13px;font-weight:300;pointer-events:none;z-index:5}
+.drop.hot{background:rgba(45,124,181,0.07);outline:2px dashed rgba(45,124,181,0.4);outline-offset:-16px}
+.drop .big{font-size:20px;color:rgba(0,0,0,0.5)}
+.drop .btn{pointer-events:auto}
+.hud{position:absolute;left:14px;bottom:14px;z-index:6;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.hud .seg{background:rgba(255,255,255,0.8);border:1px solid rgba(0,0,0,0.06);backdrop-filter:blur(10px)}
+.vhud{position:absolute;right:14px;top:14px;z-index:6;font-size:10px;color:rgba(0,0,0,0.3);text-align:right;
+      line-height:1.6;font-variant-numeric:tabular-nums;pointer-events:none}
+.tag{position:absolute;left:14px;top:14px;z-index:6;font-size:9px;font-weight:600;letter-spacing:.16em;
+     text-transform:uppercase;color:rgba(0,0,0,0.25);pointer-events:none}
+
+/* hover card for per-part print preview */
+.hovercard{position:absolute;z-index:20;width:250px;background:rgba(255,255,255,0.96);backdrop-filter:blur(16px);
+           border:1px solid rgba(45,124,181,0.18);border-radius:12px;padding:12px;box-shadow:0 16px 50px rgba(0,0,0,0.14);
+           pointer-events:none;opacity:0;transition:opacity .18s}
+.hovercard.on{opacity:1;pointer-events:auto}
+
+/* progress + toast */
+.prog{position:absolute;left:0;right:0;top:0;height:2px;background:transparent;z-index:30;overflow:hidden}
+.prog i{display:block;height:100%;width:0;background:#2d7cb5;transition:width .2s}
+.toast{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);z-index:40;background:rgba(26,30,42,0.92);
+       color:#fff;font-size:11px;padding:9px 16px;border-radius:60px;opacity:0;transition:opacity .3s;pointer-events:none;
+       max-width:70%;text-align:center;line-height:1.5}
+.toast.on{opacity:1}
+.toast.err{background:#b5432d}
+
+.empty{font-size:11px;color:rgba(0,0,0,0.28);line-height:1.6;padding:2px 0}
+.note{font-size:10px;color:rgba(0,0,0,0.32);line-height:1.55;margin-top:7px}
+.note.warn{color:#b5432d}
+hr{border:none;border-top:1px solid rgba(0,0,0,0.07);margin:9px 0}
+@media(max-width:1100px){#pp{grid-template-columns:230px 1fr 250px}}
+</style>
+</head>
+<body>
+<div class="nz"></div>
+
+<nav class="nv">
+  <a class="nv-logo" href="../index.html">evapoflex</a>
+  <div class="nv-mid"><span class="nv-title">Print Prep</span></div>
+  <div class="nv-right">
+    <span class="nv-title" style="letter-spacing:.1em">demo shell · unbundled sources</span>
+    <a class="nv-link" href="../index.html">Site</a>
+  </div>
+</nav>
+
+<div id="pp" class="on">
+  <div class="pane pane-l" id="pane-l"></div>
+  <div id="stage"><div class="prog" id="prog"><i></i></div></div>
+  <div class="pane pane-r" id="pane-r"></div>
+</div>
+
+<script type="module">
+/* Demo shell for Print Prep.
+ *
+ * The shipped printprep.html holds one AES-GCM ciphertext and needs the gate
+ * password to turn back into JavaScript. This page skips all of that and loads
+ * the committed sources in tools/printprep/src/ straight off disk — no build
+ * step, no esbuild, no password. Same application, just unbundled.
+ *
+ * boot() wants worker *source text*, and the real worker files use relative
+ * imports that would not resolve from a blob URL. So each worker source here is
+ * a one-line module that imports the real file by absolute URL; its own
+ * relative imports then resolve against that URL as normal.
+ */
+const ROOT = new URL('../', location.href).href;
+const SRC  = new URL('../tools/printprep/src/', location.href).href;
+const stub = (p) => `import ${JSON.stringify(new URL(p, SRC).href)};`;
+
+try {
+  const mod = await import(SRC + 'app.js');
+  await mod.boot({
+    workerSources: { geom: stub('workers/geom.worker.js'), csg: stub('workers/csg.worker.js') },
+    baseUrl: ROOT,
+  });
+} catch (err) {
+  console.error(err);
+  document.getElementById('stage').insertAdjacentHTML('beforeend',
+    `<div class="drop"><div class="big">Failed to start</div><div>${(err && err.message) || err}</div></div>`);
+}
+</script>
+</body>
+</html>
