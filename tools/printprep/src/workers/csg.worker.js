@@ -8,7 +8,7 @@ import { initManifold, ctx, solidFromMesh, forceEval } from '../csg/manifoldCtx.
 import * as arena from '../csg/arena.js';
 import { meshOut, transfersOf, soupToMesh } from '../csg/convert.js';
 import { makeJoint, params as jointParams } from '../csg/joint.js';
-import { makeSeamCoupon, makeSeamPair, seamParams, tabPolygon } from '../csg/seamJoints.js';
+import { bossPolygon, makeSeamCoupon, makeSeamPair, seamParams, tabPolygon } from '../csg/seamJoints.js';
 import { stampJoints } from '../csg/jointStamp.js';
 import { chamferChains } from '../csg/chamfer.js';
 import { writeSTL } from '../geom/stl.js';
@@ -170,24 +170,99 @@ serve({
         return w;
       };
       const backing = [[-span, -span], [span, -span], [span, 0], [-span, 0]];
+      // Every polygon here - backing, tab, boss - is authored counter-clockwise,
+      // and `Positive` fills winding > 0 only. For an X-normal seam toWorld is a
+      // transposition (x goes to world Y, y goes to world X), which is a
+      // reflection: the ring comes out clockwise and fills NOTHING. Measured
+      // before this reversal, an X-aligned seam sectioned to an empty solid and
+      // the cut silently no-opped, while the identical Y-aligned seam cut
+      // correctly - and on a grid-cut sheet that is half of all seams.
       const cs = (pts, grow) => {
-        let c = new (ctx().CrossSection)([pts.map(toWorld)], 'Positive');
+        const ring = pts.map(toWorld);
+        if (k === 0) ring.reverse();
+        let c = new (ctx().CrossSection)([ring], 'Positive');
         if (grow) { const g = c.offset(grow, 'Miter', 2, 0); c.delete(); c = g; }
         return c;
       };
+
+      const { Manifold } = ctx();
+
+      // The profile is ONE tab in ONE place, so the seam had better be one rail.
+      //
+      // `backing` spans the whole model and `at` is a single scalar, so a plane
+      // that crosses four spokes gets a joint on whichever one `at` happens to
+      // land on and a plain butt cut on the other three - the silent
+      // half-jointed seam this handler's whole restriction exists to prevent.
+      // Worse, `at` defaults to the bbox midpoint, which on anything ring- or
+      // wheel-shaped is the empty middle: measured on two 6 mm rails at x=+-20,
+      // the pad and tab welded into a free-floating island at x=-9..9 touching
+      // no material at all, and decompose duly turned it into a part that would
+      // orient, pack and print as debris.
+      //
+      // So section the parent at the seam and insist on exactly one lump, wide
+      // enough to hold the rail we were told about. Refusing is the same
+      // bargain the axis guard above makes: a caller that gets an error can
+      // fall back to a plane cut, but one that gets a wrong answer cannot.
+      const probe = 0.5;
+      const slabCs = cs([[-span, -probe / 2], [span, -probe / 2], [span, probe / 2], [-span, probe / 2]], 0);
+      const slab = Manifold.extrude(slabCs, T + 4).translate([0, 0, bb.min[2] - 2]);
+      slabCs.delete();
+      const section = forceEval(m.intersect(slab));
+      slab.delete();
+      const lumps = section.decompose();
+      const uSpan = lumps.map((c) => { const b = c.boundingBox(); return [b.min[uAxis], b.max[uAxis]]; });
+      for (const c of lumps) c.delete();
+      section.delete();
+      if (lumps.length !== 1) {
+        throw new Error(lumps.length === 0
+          ? 'the seam plane does not cross the solid'
+          : `the seam crosses ${lumps.length} separate lumps - one profiled cut can only joint one of them`);
+      }
+      const [uLo, uHi] = uSpan[0];
+      if (uMid - p.rawW / 2 < uLo - 1e-6 || uMid + p.rawW / 2 > uHi + 1e-6) {
+        throw new Error(`the tab at ${uMid.toFixed(1)} is not inside the ${(uHi - uLo).toFixed(1)} mm of material `
+          + `at the seam (${uLo.toFixed(1)}..${uHi.toFixed(1)}) - pass stock.at`);
+      }
+
+      // Pad the stock BEFORE cutting it.
+      //
+      // seamParams sizes the tab to the bossed width, not the rail's: ask for a
+      // boss on 6 mm stock and it returns a 15.6 mm head. Cutting that profile
+      // out of an unpadded 6 mm rail does not make a wide joint, it makes no
+      // joint at all - the tab is wider than the material, so it clips to the
+      // full rail width and loses its undercut, and the grown socket then takes
+      // that whole width back out of the other half. Measured on 6 x 60 x 10
+      // stock: the halves came out spanning y <= 3.90 and y >= 4.08 - not a
+      // weak seam, a butt cut with a 0.18 mm gap and nothing touching anywhere.
+      //
+      // The pad is the same polygon makeSeamPair uses, in the same seam frame,
+      // extruded through the sheet. It straddles the seam, so both halves get
+      // their share of it and the joint ends up in the middle of solid material.
+      const bossPoly = bossPolygon(p);
+      let padded = null;
+      if (bossPoly) {
+        const bcs = cs(bossPoly, 0);
+        const pad = Manifold.extrude(bcs, T).translate([0, 0, bb.min[2]]);
+        bcs.delete();
+        padded = forceEval(m.add(pad));
+        pad.delete();
+      }
+      const stockSolid = padded || m;
+
       const half = cs(backing, 0);
       const tab = cs(tabPolygon(p), 0);
       const tabFat = cs(tabPolygon(p), p.clearance);
       const aSide = half.add(tab);            // everything behind the seam, tab included
       const bSide = half.add(tabFat);         // the socket, opened by the clearance
 
-      const { Manifold } = ctx();
       const cutA = Manifold.extrude(aSide, T + 4).translate([0, 0, bb.min[2] - 2]);
       const cutB = Manifold.extrude(bSide, T + 4).translate([0, 0, bb.min[2] - 2]);
-      const A = forceEval(m.intersect(cutA));
-      const B = forceEval(m.subtract(cutB));
+      const A = forceEval(stockSolid.intersect(cutA));
+      const B = forceEval(stockSolid.subtract(cutB));
       for (const c of [half, tab, tabFat, aSide, bSide]) c.delete();
       cutA.delete(); cutB.delete();
+      // A and B are evaluated, so the padded intermediate has no readers left.
+      if (padded) padded.delete();
 
       if (A.isEmpty() || B.isEmpty()) {
         A.delete(); B.delete();

@@ -68,8 +68,8 @@ export function seamParams(type, stock, opts = {}) {
   // A boss pads the rail locally so the seam has stock to be a joint in.
   //
   // On the EEDX rails - 6 mm wide - the best tab available grips 0.9 mm, which
-  // is not a joint, it is a suggestion. Widening the rail to 18 mm for 25 mm
-  // either side of the seam costs a few grams and takes the grip to 5.6 mm. The
+  // is not a joint, it is a suggestion. Widening the rail to 18 mm for 12 mm
+  // either side of the seam costs a few grams and takes the grip to 3.9 mm. The
   // pad tapers back to the rail at 45 degrees in the PLANE OF THE SHEET, so it
   // is a vertical wall printed flat and a 45 degree wall printed on edge -
   // free in both, and no step for a crack to start at.
@@ -113,6 +113,19 @@ export function seamParams(type, stock, opts = {}) {
 
   const tabL = L;
 
+  // The pad has to be long enough to hold the whole tab.
+  //
+  // tabL grows as the flank gets shallower - at 15 degrees on 6 mm stock it
+  // reaches 14.6 mm while the default pad reaches only 12 - and a tab tip
+  // poking out past the pad is back in raw rail, where it clips to the rail
+  // width. Measured there: the tab flares to 14.2 mm at the pad's end and then
+  // drops straight to 6 mm, so the joint grips about 3.2 mm while `grip` below
+  // still reports 3.9, and the abrupt shoulder is precisely the step the 45
+  // degree ramp exists to avoid. A shallower flank is the recommended
+  // direction, so grow the pad to follow the tab rather than capping the tab
+  // to fit the pad - the extra pad costs a fraction of a gram.
+  const bossLen = boss ? Math.max(bossL, 2 * (tabL + 2)) : 0;
+
   // Pillars: round posts standing through the full thickness, on the male's
   // shoulder either side of the tab, entering matching bores in the female.
   //
@@ -138,7 +151,7 @@ export function seamParams(type, stock, opts = {}) {
 
   return {
     type, W, T, rawW, neck, head, R, centre, tabL, clearance, sideWall, flankDeg,
-    boss: boss ? { width: bossW, length: bossL, ramp: (bossW - rawW) / 2 } : null,
+    boss: boss ? { width: bossW, length: bossLen, ramp: (bossW - rawW) / 2 } : null,
     pillars: pillarFit ? pillars : 0, pillarR: pr, pillarAt, pillarDepth,
     detent: detent > 0 && T >= 4 ? detent : 0,
     detentR: Math.min(detentR, 0.14 * T, 0.28 * neck),
