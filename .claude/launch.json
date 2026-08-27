@@ -3,6 +3,8 @@
   "configurations": [
     { "name": "rig-preview", "runtimeExecutable": "python3",
       "runtimeArgs": ["-m","http.server","0","--directory","."], "port": 8123,
-      "autoPort": true }
+      "autoPort": true },
+    { "name": "printprep-demo", "runtimeExecutable": "python3",
+      "runtimeArgs": ["printprep-demo/serve.py","8124"], "port": 8124 }
   ]
 }

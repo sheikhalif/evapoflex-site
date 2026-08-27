@@ -78,6 +78,21 @@ export function createStage(container) {
       controls.target.set(c[0], c[1], c[2]);
       const d = size * pad / Math.tan((camera.fov / 2) * Math.PI / 180);
       camera.position.set(c[0] + d * 0.6, c[1] - d * 0.75, c[2] + d * 0.55);
+
+      // The depth cues have to follow the model instead of assuming one.
+      // Fog fixed at 1400-2600 mm is a pleasant haze behind a 200 mm bracket
+      // and a solid wall of background colour in front of a 967 mm wheel:
+      // framing that wheel puts the camera 4.1 m back, every triangle of it
+      // lands past the fog's far plane, and the viewport renders completely
+      // empty - the model, the parts and the build volume all invisible, with
+      // nothing in the console to say why.
+      camera.near = Math.max(0.5, d / 2000);
+      camera.far = Math.max(5000, d * 6);
+      camera.updateProjectionMatrix();
+      if (scene.fog) {
+        scene.fog.near = d * 1.15;
+        scene.fog.far = d * 3.2;
+      }
     },
   };
 }

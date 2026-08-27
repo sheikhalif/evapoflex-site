@@ -4,13 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex, nofollow">
-<title>Print Prep — Evapoflex</title>
-<link rel="icon" type="image/png" href="./assets/images/favicon.png">
-<link rel="apple-touch-icon" href="./assets/images/favicon.png">
+<title>Print Prep — demo shell</title>
+<link rel="icon" type="image/png" href="../assets/images/favicon.png">
 <script type="importmap">
 { "imports": {
-  "three": "./assets/vendor/three/three.module.min.js",
-  "three/addons/controls/OrbitControls.js": "./assets/vendor/three/OrbitControls.js"
+  "three": "../assets/vendor/three/three.module.min.js",
+  "three/addons/controls/OrbitControls.js": "../assets/vendor/three/OrbitControls.js"
 } }
 </script>
 <style>
@@ -34,27 +33,6 @@ h1,h2,h3{font-family:Verdana,Geneva,sans-serif;font-weight:400}
          text-decoration:none;background:none;border:none;font-family:inherit;cursor:pointer;transition:color .3s}
 .nv-link:hover{color:#2d7cb5}
 
-/* ---------------------------------------------------------------- gate */
-.gate{position:fixed;inset:0;z-index:900;background:#f5f4f0;display:flex;align-items:center;justify-content:center;
-      transition:opacity .5s cubic-bezier(.16,1,.3,1)}
-.gate.hidden{opacity:0;pointer-events:none}
-.gate-card{width:min(400px,90vw);text-align:center}
-.gate-mark{font-size:26px;font-weight:600;color:#2d7cb5;letter-spacing:-0.02em;margin-bottom:6px}
-.gate-sub{font-size:10px;font-weight:600;letter-spacing:0.22em;text-transform:uppercase;color:rgba(0,0,0,0.3);margin-bottom:36px}
-.gate-row{display:flex;gap:8px}
-.gate-in{flex:1;height:44px;padding:0 16px;font-family:Verdana,Geneva,sans-serif;font-size:13px;color:#1a1e2a;
-         background:rgba(255,255,255,0.7);border:1px solid rgba(0,0,0,0.1);border-radius:60px;outline:none;transition:border-color .3s}
-.gate-in:focus{border-color:rgba(45,124,181,0.45)}
-.gate-go{height:44px;padding:0 28px;font-size:11px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;
-         background:#2d7cb5;color:#fff;border:none;border-radius:60px;cursor:pointer;font-family:Verdana,Geneva,sans-serif;transition:all .3s}
-.gate-go:hover:not(:disabled){background:#4a9fd4}
-.gate-go:disabled{opacity:.5;cursor:default}
-.gate-msg{font-size:11px;color:rgba(0,0,0,0.35);margin-top:18px;min-height:16px;line-height:1.5}
-.gate-msg.err{color:#b5432d}
-.gate-foot{font-size:10px;color:rgba(0,0,0,0.2);margin-top:44px;letter-spacing:.04em}
-@keyframes shake{10%,90%{transform:translateX(-2px)}30%,70%{transform:translateX(4px)}50%{transform:translateX(-4px)}}
-.gate-card.bad{animation:shake .4s}
-
 /* ---------------------------------------------------------------- app frame */
 #pp{position:fixed;inset:48px 0 0 0;display:none;grid-template-columns:264px 1fr 288px;gap:0;z-index:10}
 #pp.on{display:grid}
@@ -63,7 +41,11 @@ h1,h2,h3{font-family:Verdana,Geneva,sans-serif;font-weight:400}
 .pane-l{border-right:1px solid rgba(45,124,181,0.12)}
 .pane-r{border-left:1px solid rgba(45,124,181,0.12)}
 #stage{position:relative;background:#eeeee8;min-width:0}
-#stage > canvas{display:block;width:100%;height:100%}
+/* The canvas is taken out of flow. renderer.setSize(w,h,false) writes only the
+   canvas *attributes*, which on a 2x display are twice the CSS size; left in
+   flow with height:100%, that intrinsic height inflates the grid row and the
+   ResizeObserver then ratchets the stage past the bottom of the window. */
+#stage > canvas{display:block;position:absolute;inset:0;width:100%;height:100%}
 
 /* ---------------------------------------------------------------- controls, after the index.html configurator */
 .card{background:rgba(255,255,255,0.62);border:1px solid rgba(0,0,0,0.06);border-radius:10px;padding:11px 14px;position:relative}
@@ -215,120 +197,48 @@ hr{border:none;border-top:1px solid rgba(0,0,0,0.07);margin:9px 0}
 <div class="nz"></div>
 
 <nav class="nv">
-  <a class="nv-logo" href="./index.html">evapoflex</a>
+  <a class="nv-logo" href="../index.html">evapoflex</a>
   <div class="nv-mid"><span class="nv-title">Print Prep</span></div>
   <div class="nv-right">
-    <span class="nv-title" id="pp-build" style="letter-spacing:.1em">__PP_BUILD__ · __PP_HASH__</span>
-    <a class="nv-link" href="./index.html">Site</a>
+    <span class="nv-title" style="letter-spacing:.1em">demo shell · unbundled sources</span>
+    <a class="nv-link" href="../index.html">Site</a>
   </div>
 </nav>
 
-<div class="gate" id="gate">
-  <div class="gate-card" id="gate-card">
-    <div class="gate-mark">evapoflex</div>
-    <div class="gate-sub">Print Prep</div>
-    <form class="gate-row" id="gate-form">
-      <input class="gate-in" id="gate-pw" type="password" placeholder="Password" autocomplete="current-password" autofocus>
-      <button class="gate-go" id="gate-go" type="submit">Unlock</button>
-    </form>
-    <div class="gate-msg" id="gate-msg"></div>
-    <div class="gate-foot">Split · joint · orient · arrange &nbsp;—&nbsp; runs entirely in this browser</div>
-  </div>
-</div>
-
-<div id="pp">
+<div id="pp" class="on">
   <div class="pane pane-l" id="pane-l"></div>
   <div id="stage"><div class="prog" id="prog"><i></i></div></div>
   <div class="pane pane-r" id="pane-r" hidden></div>
 </div>
 
-<script>
-/* ------------------------------------------------------------------ the gate
+<script type="module">
+/* Demo shell for Print Prep.
  *
- * The application is not on this page in runnable form. What is on this page is
- * one AES-256-GCM ciphertext. The password is stretched with PBKDF2-SHA256 and
- * the result is the only thing that turns those bytes back into JavaScript, so
- * there is no client-side flag to flip: a wrong password produces an
- * authentication failure, not a locked-but-present app.
+ * The shipped printprep.html holds one AES-GCM ciphertext and needs the gate
+ * password to turn back into JavaScript. This page skips all of that and loads
+ * the committed sources in tools/printprep/src/ straight off disk — no build
+ * step, no esbuild, no password. Same application, just unbundled.
  *
- * The sources live in tools/printprep/src/ in this repository and are not
- * secret. The gate is about who can use the tool, not about hiding how it works.
+ * boot() wants worker *source text*, and the real worker files use relative
+ * imports that would not resolve from a blob URL. So each worker source here is
+ * a one-line module that imports the real file by absolute URL; its own
+ * relative imports then resolve against that URL as normal.
  */
-(function () {
-  const SALT    = '__PP_SALT__';
-  const IV      = '__PP_IV__';
-  const ROUNDS  = __PP_ROUNDS__;
-  const PAYLOAD = '__PP_PAYLOAD__';
+const ROOT = new URL('../', location.href).href;
+const SRC  = new URL('../tools/printprep/src/', location.href).href;
+const stub = (p) => `import ${JSON.stringify(new URL(p, SRC).href)};`;
 
-  const $ = (id) => document.getElementById(id);
-  const form = $('gate-form'), input = $('gate-pw'), go = $('gate-go'),
-        msg = $('gate-msg'), card = $('gate-card'), gate = $('gate');
-
-  const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-
-  function say(text, isError) {
-    msg.textContent = text || '';
-    msg.classList.toggle('err', !!isError);
-  }
-
-  async function gunzip(bytes) {
-    const ds = new DecompressionStream('gzip');
-    const stream = new Blob([bytes]).stream().pipeThrough(ds);
-    return new Uint8Array(await new Response(stream).arrayBuffer());
-  }
-
-  async function unlock(password) {
-    const enc = new TextEncoder();
-    const base = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
-    const key = await crypto.subtle.deriveKey(
-      { name: 'PBKDF2', salt: b64(SALT), iterations: ROUNDS, hash: 'SHA-256' },
-      base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-    // Throws OperationError on a wrong password: GCM authenticates, so a bad key
-    // cannot yield plausible-looking plaintext.
-    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(IV) }, key, b64(PAYLOAD));
-    return JSON.parse(new TextDecoder().decode(await gunzip(new Uint8Array(plain))));
-  }
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const pw = input.value;
-    if (!pw) return;
-    go.disabled = true; input.disabled = true;
-    say('Deriving key…');
-    let bundle;
-    try {
-      bundle = await unlock(pw);
-    } catch (err) {
-      go.disabled = false; input.disabled = false;
-      input.value = ''; input.focus();
-      card.classList.remove('bad'); void card.offsetWidth; card.classList.add('bad');
-      say('That password does not decrypt this page.', true);
-      return;
-    }
-    say('Starting…');
-    try {
-      const url = URL.createObjectURL(new Blob([bundle.app], { type: 'text/javascript' }));
-      const mod = await import(url);
-      URL.revokeObjectURL(url);
-      gate.classList.add('hidden');
-      $('pp').classList.add('on');
-      setTimeout(() => gate.remove(), 600);
-      await mod.boot({
-        workerSources: { geom: bundle.geomWorker, csg: bundle.csgWorker },
-        baseUrl: new URL('.', location.href).href,
-      });
-    } catch (err) {
-      console.error(err);
-      say('Unlocked, but the tool failed to start: ' + (err && err.message ? err.message : err), true);
-      go.disabled = false; input.disabled = false;
-    }
+try {
+  const mod = await import(SRC + 'app.js');
+  await mod.boot({
+    workerSources: { geom: stub('workers/geom.worker.js'), csg: stub('workers/csg.worker.js') },
+    baseUrl: ROOT,
   });
-
-  // Surface the two environment requirements up front rather than failing
-  // halfway through a boolean with something cryptic.
-  if (!window.WebAssembly) say('This browser has no WebAssembly. The geometry engine needs it.', true);
-  else if (!window.crypto || !crypto.subtle) say('Needs a secure context (https) for the unlock to work.', true);
-})();
+} catch (err) {
+  console.error(err);
+  document.getElementById('stage').insertAdjacentHTML('beforeend',
+    `<div class="drop"><div class="big">Failed to start</div><div>${(err && err.message) || err}</div></div>`);
+}
 </script>
 </body>
 </html>

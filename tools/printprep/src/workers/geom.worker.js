@@ -25,8 +25,21 @@ import { selectChains } from '../csg/chamfer.js';
 import { convexHull } from '../geom/hull2d.js';
 
 const parts = new Map();      // id -> analysed part
+const staged = new Map();     // id -> raw soup, held only long enough to site joints
 
 const TRI_LIMIT = 2_000_000;
+
+/** Indexed mesh -> unindexed soup, the form every section routine wants. */
+function soupFromIndexed(vertProperties, triVerts) {
+  const soup = new Float32Array(triVerts.length * 3);
+  for (let i = 0; i < triVerts.length; i++) {
+    const v = triVerts[i] * 3;
+    soup[i * 3] = vertProperties[v];
+    soup[i * 3 + 1] = vertProperties[v + 1];
+    soup[i * 3 + 2] = vertProperties[v + 2];
+  }
+  return soup;
+}
 
 function analyse(soup, id, name, ctx) {
   ctx?.progress('weld', 0.1);
@@ -112,13 +125,55 @@ serve({
     };
   },
 
+  /**
+   * Park a component's raw mesh for seam work.
+   *
+   * Joint siting needs sections through both sides of a seam, but nothing else
+   * an analysis provides - no BVH, no regions, no feature edges. Those cost
+   * real time per part and the geometry is about to change anyway when the
+   * joints are stamped into it, so the full analysis waits until after
+   * stamping and this holds just the soup.
+   */
+  async 'geom.stage'({ id, vertProperties, triVerts }) {
+    staged.set(id, soupFromIndexed(vertProperties, triVerts));
+    return { ok: true };
+  },
+
+  async 'geom.unstage'({ ids }) { for (const id of ids) staged.delete(id); return true; },
+
+  /**
+   * Site the joints on ONE seam, between two real post-cut components.
+   *
+   * This deliberately runs after the booleans rather than during the plan. The
+   * planner works on pieces clipped out of a proxy: they are open where earlier
+   * cuts passed, so sections through them do not close and the contact region
+   * has to be reconstructed by masking the root against a list of halfspaces.
+   * A component that came back from Manifold is a closed solid, so its sections
+   * are simply true - what the section says is material IS material, including
+   * everywhere a neighbouring cut took some away. That removes the guesswork
+   * that used to leave outer seams unjointed.
+   */
+  async 'geom.seamJoints'({ aId, bId, plane, sMin, sMax, fit, nozzle, avoid }) {
+    const soupA = staged.get(aId) || (parts.has(aId) ? soupOf(parts.get(aId).m) : null);
+    const soupB = staged.get(bId) || (parts.has(bId) ? soupOf(parts.get(bId).m) : null);
+    if (!soupA || !soupB) throw new Error('seam side not staged');
+    const report = {};
+    const p = placeJoints(soupA, soupB, plane, {
+      nozzle: nozzle ?? 0.4, fit, sMax, sMin, avoid: avoid || [], report,
+    });
+    if (!p) return { placed: null, why: report.why || 'no joint fits this face' };
+    return {
+      placed: {
+        S: p.S, T: p.T, sites: p.sites, frame: p.frame,
+        areaMm2: p.areaMm2, lobeCount: p.lobeCount,
+        hb: p.params.hb, depth: p.params.depth,
+      },
+    };
+  },
+
   /** Register an already-analysed mesh (a part that came back from a boolean). */
   async 'geom.adopt'({ id, name, vertProperties, triVerts }, ctx) {
-    const soup = new Float32Array(triVerts.length * 3);
-    for (let i = 0; i < triVerts.length; i++) {
-      const v = triVerts[i] * 3;
-      soup[i * 3] = vertProperties[v]; soup[i * 3 + 1] = vertProperties[v + 1]; soup[i * 3 + 2] = vertProperties[v + 2];
-    }
+    const soup = soupFromIndexed(vertProperties, triVerts);
     const e = analyse(soup, id, name, ctx);
     const r = renderMesh(e.m);
     ctx.transfer([r.pos.buffer, r.nrm.buffer, e.feat.segs.buffer.slice(0)]);
@@ -171,6 +226,121 @@ serve({
    * placement per plane - for the main thread to execute against the CSG
    * worker.
    */
+  /**
+   * Rotational symmetry about the Z axis: how many times the model repeats.
+   *
+   * The point of finding it is that a symmetric object should come apart into
+   * repeats of ONE part, not into a bagful of one-offs. The planner cuts an
+   * axis-aligned grid, and a grid can only ever be four-fold symmetric, so a
+   * sixteen-spoke wheel cut on one comes out as sixteen different pieces -
+   * measured on the EEDX wheel, 24 parts of 20 distinct shapes, 16 of them
+   * one-offs. Cutting on the model's own symmetry instead makes them repeats.
+   *
+   * Detection is an area-weighted histogram of where material sits around the
+   * axis, compared against itself rotated by one sector. That is cheap, needs
+   * no correspondence between triangles, and degrades sensibly: a nearly
+   * symmetric model scores nearly symmetric rather than passing or failing on
+   * one stray vertex.
+   */
+  async 'geom.symmetry'({ id, tol = 0.06 }) {
+    const e = parts.get(id);
+    if (!e) throw new Error('unknown part');
+    const soup = soupOf(e.m);
+    const BINS = 1440;                       // a quarter-degree; divides by 16
+    const hist = new Float64Array(BINS);
+
+    // The axis is the VOLUME centroid, not the area-weighted one.
+    //
+    // Weighting by triangle area weights by where the mesh happens to be finely
+    // tessellated. On the EEDX wheel that put the axis 0.56 mm off, which on
+    // 6 mm rails is a tenth of their width - enough to make a symmetric model
+    // read as asymmetric. The signed-tetrahedron sum is the exact centroid of
+    // the enclosed solid and costs the same pass.
+    let vol = 0, vcx = 0, vcy = 0;
+    for (let i = 0; i < soup.length; i += 9) {
+      const ax = soup[i], ay = soup[i+1], az = soup[i+2];
+      const bx = soup[i+3], by = soup[i+4], bz = soup[i+5];
+      const gx = soup[i+6], gy = soup[i+7], gz = soup[i+8];
+      const v = (ax * (by*gz - bz*gy) - ay * (bx*gz - bz*gx) + az * (bx*gy - by*gx)) / 6;
+      vol += v; vcx += v * (ax+bx+gx) / 4; vcy += v * (ay+by+gy) / 4;
+    }
+
+    let cx = 0, cy = 0, wsum = 0;
+    const tri = [];
+    for (let i = 0; i < soup.length; i += 9) {
+      const ax = soup[i], ay = soup[i + 1], az = soup[i + 2];
+      const bx = soup[i + 3], by = soup[i + 4], bz = soup[i + 5];
+      const gx = soup[i + 6], gy = soup[i + 7], gz = soup[i + 8];
+      const ux = bx - ax, uy = by - ay, uz = bz - az;
+      const vx = gx - ax, vy = gy - ay, vz = gz - az;
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const area = 0.5 * Math.hypot(nx, ny, nz);
+      if (!(area > 0)) continue;
+      const mx = (ax + bx + gx) / 3, my = (ay + by + gy) / 3;
+      cx += mx * area; cy += my * area; wsum += area;
+      tri.push(mx, my, area);
+    }
+    if (!wsum) return { order: 1, why: 'no area' };
+    cx /= wsum; cy /= wsum;
+    if (Math.abs(vol) > 1e-9) { cx = vcx / vol; cy = vcy / vol; }
+
+    let rMax = 0;
+    for (let i = 0; i < tri.length; i += 3) {
+      const dx = tri[i] - cx, dy = tri[i + 1] - cy;
+      const r = Math.hypot(dx, dy);
+      if (r > rMax) rMax = r;
+      // Splat across the two nearest bins by fractional position, rather than
+      // dropping the whole triangle into one.
+      //
+      // Hard binning quantises, and quantisation is not rotation-invariant: a
+      // centroid sitting near a bin edge falls one side before the turn and the
+      // other side after, so a model that repeats EXACTLY still reads as
+      // mismatched. Measured on a frame generated to be exactly 16-fold, hard
+      // binning reported 4.62% - which is the same order as the number this
+      // detector was reporting for real models, so it was measuring itself.
+      const t = (Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI) * BINS;
+      const b0 = Math.floor(t), f = t - b0;
+      const lo = ((b0 % BINS) + BINS) % BINS, hi = (lo + 1) % BINS;
+      hist[lo] += tri[i + 2] * (1 - f);
+      hist[hi] += tri[i + 2] * f;
+    }
+    const total = hist.reduce((a, b) => a + b, 0) || 1;
+
+    // How well does the model sit on top of itself after one sector's turn?
+    const errAt = (shift) => {
+      let err = 0;
+      for (let i = 0; i < BINS; i++) err += Math.abs(hist[i] - hist[(i + shift) % BINS]);
+      return err / total;
+    };
+    const scores = [];
+    let order = 1;
+    for (let N = 2; N <= 64; N++) {
+      if (BINS % N) continue;               // only orders the bins can express
+      const err = errAt(BINS / N);
+      scores.push({ N, err: +err.toFixed(4) });
+      if (err < tol) order = N;             // keep the largest that holds
+    }
+
+    // Where to put the cuts: the offset within one sector whose N rays cross
+    // the least material. On a spoked wheel that is the gap between spokes,
+    // which is where a cut belongs - through air rather than through a spoke.
+    let phase = 0;
+    if (order > 1) {
+      const step = BINS / order;
+      let best = Infinity;
+      for (let o = 0; o < step; o++) {
+        let m = 0;
+        for (let k = 0; k < order; k++) m += hist[(o + k * step) % BINS];
+        if (m < best) { best = m; phase = o; }
+      }
+    }
+    return {
+      order, centre: [cx, cy], rMax, phaseRad: -Math.PI + (phase + 0.5) * 2 * Math.PI / BINS,
+      err: order > 1 ? +errAt(BINS / order).toFixed(4) : null,
+      scores: scores.filter((s) => s.err < 0.25).slice(0, 12),
+    };
+  },
+
   async 'geom.plan'({ id, bed, sMax, fit, nozzle, manualPlanes }, ctx) {
     const e = parts.get(id);
     if (!e) throw new Error('unknown part');
@@ -182,16 +352,30 @@ serve({
     // import cap the full soup costs seconds, and it is CORRECT.
     const proxy = soupOf(e.m);
     ctx.progress('search', 0.1);
-    const prot = protrusionBound(sMax ?? 25, fit);
+
+    // How much room to reserve for a joint boss standing proud of a cut face.
+    //
+    // A square joint of side S needs S/sqrt(2) + margin of clearance from the
+    // face's edge in every direction, so a face only t thick can host one at
+    // all when t >= 2*(sMin/sqrt(2) + margin) - about 20 mm for the 12 mm
+    // minimum joint. Reserving the worst-case boss on a part thinner than that
+    // is reserving room for something that can never be stamped: on the 10 mm
+    // EEDX wheel it shrank every printable slab from 252 mm to 193 mm and asked
+    // for a 5 x 5 grid where 4 x 4 does the job.
+    const mSize = [0, 1, 2].map((i) => e.m.bbox.max[i] - e.m.bbox.min[i]);
+    const jointMargin = Math.max(1.5, 2 * (nozzle ?? 0.4));
+    const thinnest = Math.min(...mSize);
+    const canJoint = thinnest >= 2 * (12 / Math.SQRT2 + jointMargin);
+    const prot = canJoint ? protrusionBound(sMax ?? 25, fit) : 0;
     const analysis = { regions: e.reg.regions, totalArea: e.reg.regions.reduce((s, r) => s + r.area, 0) };
 
     let plan;
     if (manualPlanes && manualPlanes.length) {
       // The user placed the planes; build the same tree shape by applying each
       // plane to every piece it crosses, in order.
-      plan = manualTree(proxy, manualPlanes);
+      plan = manualTree(proxy, manualPlanes);   // `only` masks travel with each plane
     } else {
-      plan = planSplit(proxy, analysis, { bed, protrusion: prot, sMax, budgetMs: 15000 });
+      plan = planSplit(proxy, analysis, { bed, protrusion: prot, sMax, budgetMs: 45000 });
     }
     ctx.progress('joints', 0.6);
 
@@ -225,8 +409,16 @@ serve({
       piece.fit = fitsWithJoints(fitPoints(piece.soup), piece.cutFaces, bed, prot, 2);
       if (!piece.fit) allFit = false;
     }
+    const strip = (list) => list.map((p) => ({ n: p.n, d: p.d, parentId: p.parentId, aId: p.aId, bId: p.bId, jointless: !!p.jointless }));
     return {
-      planes: plan.planes.map((p) => ({ n: p.n, d: p.d, parentId: p.parentId, aId: p.aId, bId: p.bId, jointless: !!p.jointless })),
+      // The alternatives the search found, so the caller can offer a choice
+      // rather than presenting one answer as though it were the only one.
+      options: (plan.options || []).map((o) => ({
+        label: o.label, pieces: o.pieces, distinct: o.distinct,
+        simplicity: o.simplicity, strength: o.strength, planes: strip(o.planes),
+      })),
+      chosen: plan.chosen || null,
+      planes: strip(plan.planes),
       placements: placements.map((p) => p && {
         S: p.S, T: p.T, sites: p.sites, frame: p.frame, areaMm2: p.areaMm2,
         hb: p.params.hb, depth: p.params.depth,
@@ -293,7 +485,7 @@ serve({
     return { hull: convexHull(pts), u, v, minH };
   },
 
-  async 'geom.free'({ id }) { parts.delete(id); return true; },
+  async 'geom.free'({ id }) { parts.delete(id); staged.delete(id); return true; },
   async 'geom.stats'() { return { parts: parts.size }; },
 });
 

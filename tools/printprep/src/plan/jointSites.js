@@ -32,6 +32,11 @@ const SQRT2 = Math.SQRT2;
  */
 export function placeJoints(soupA, soupB, plane, opts = {}) {
   const sMin = opts.sMin ?? 12, sMax = opts.sMax ?? 25;
+  // Filled in on the way out when no joint can be placed. A seam that comes
+  // back plain should be able to say why - "no room" covers a face that is
+  // genuinely too small and a face that is only blocked by a neighbouring cut,
+  // and those call for completely different fixes by the user.
+  const rep = opts.report || {};
   const margin = opts.margin ?? Math.max(1.5, 2 * (opts.nozzle ?? 0.4));
   const { n, d } = plane;
 
@@ -74,11 +79,11 @@ export function placeJoints(soupA, soupB, plane, opts = {}) {
 
   const secA = sliceSide('A', d + eps);
   const secB = sliceSide('B', d - eps);
-  if (!secA.loops.length || !secB.loops.length) return null;
+  if (!secA.loops.length || !secB.loops.length) return fail(rep, 'the cut face has no closed section on one side');
 
   const cell = Math.max(0.4, Math.sqrt(Math.max(secA.area, 1)) / 160);
   const gridA = maskBy(rasterize(secA.loops, { cell, pad: 4 }), secA, hsA);
-  if (!gridA.mask.length) return null;
+  if (!gridA.mask.length) return fail(rep, 'the cut face rasterised to nothing');
   const gridB = maskBy({ ...gridA, mask: rasterizeOnto(remapLoops(secB, secA), gridA).mask }, secB, hsB);
   const contact = andMask(gridA, gridB);
 
@@ -93,7 +98,7 @@ export function placeJoints(soupA, soupB, plane, opts = {}) {
   // topped out a hair under it, and the placement returned nothing instead of
   // a slightly smaller joint that fit fine.
   const S0 = quantize(Math.min(sMax, SQRT2 * (maxD - margin)), 0.5);
-  if (S0 < sMin) return null;
+  if (S0 < sMin) return fail(rep, `the widest clear spot on the face takes only a ${S0.toFixed(1)} mm joint (needs ${sMin})`);
 
   let P = params(S0, opts.fit || {});
   let T = P.T;
@@ -103,7 +108,7 @@ export function placeJoints(soupA, soupB, plane, opts = {}) {
   for (const frac of [1 / 3, 2 / 3, 1]) {
     const sa = sliceSide('A', d + T * frac);
     const sb = sliceSide('B', d - T * frac);
-    if (!sa.loops.length || !sb.loops.length) return null;
+    if (!sa.loops.length || !sb.loops.length) return fail(rep, `no material ${(T * frac).toFixed(1)} mm behind the face on one side`);
     solid = andMask(solid, maskBy({ ...gridA, mask: rasterizeOnto(remapLoops(sa, secA), gridA).mask }, sa, hsA));
     solid = andMask(solid, maskBy({ ...gridA, mask: rasterizeOnto(remapLoops(sb, secA), gridA).mask }, sb, hsB));
   }
@@ -119,21 +124,36 @@ export function placeJoints(soupA, soupB, plane, opts = {}) {
     if (j > bestJoint) bestJoint = j;
   }
   const S = Math.min(S0, quantize(SQRT2 * bestJoint, 0.5));
-  if (S < sMin) return null;
+  if (S < sMin) return fail(rep, `only ${S.toFixed(1)} mm of joint is backed by solid material (needs ${sMin})`);
   P = params(S, opts.fit || {});
   T = P.T;
 
   // Candidate cells: joint fits the eroded contact AND the solid mask.
+  //
+  // `avoid` carries the OTHER cut planes bounding these two pieces. A joint
+  // whose footprint straddles one of them would be stamped into material that
+  // the neighbouring cut is about to remove - the boss ends up hanging in air
+  // off the side of the part. Excluding those cells before selection (rather
+  // than dropping the sites afterwards) lets the placement simply choose
+  // somewhere else on the face, which is nearly always available.
+  const avoid = opts.avoid || [];
   const need = S / SQRT2 + margin;
   const needSolid = S / SQRT2;
+  const clear = S / SQRT2 + 2;
   const cand = [];
   for (let j = 0; j < fld.h; j++) {
     for (let i = 0; i < fld.w; i++) {
       const k = j * fld.w + i;
-      if (fld.d[k] >= need && solidFld.d[k] >= needSolid) cand.push(k);
+      if (fld.d[k] < need || solidFld.d[k] < needSolid) continue;
+      if (avoid.length) {
+        const [cx, cy] = cellCentre(fld, i, j);
+        const p = toWorld(secA, cx, cy, d);
+        if (avoid.some((q) => Math.abs(q.n[0] * p[0] + q.n[1] * p[1] + q.n[2] * p[2] - q.d) < clear)) continue;
+      }
+      cand.push(k);
     }
   }
-  if (!cand.length) return null;
+  if (!cand.length) return fail(rep, avoid.length ? 'every spot that fits sits across another cut' : 'no spot on the face fits the joint and its margin');
 
   // Connected lobes of the contact region - each needs at least one joint or
   // that island of the interface is unbonded.
@@ -170,7 +190,7 @@ export function placeJoints(soupA, soupB, plane, opts = {}) {
       return Math.hypot(px - x, py - y) >= 1.6 * S;
     });
   }
-  if (!sites.length) return null;
+  if (!sites.length) return fail(rep, 'no site survived spacing');
 
   return {
     S, T, params: P,
@@ -205,6 +225,8 @@ function toWorld(sec, x, y, d) {
 }
 
 const quantize = (v, q) => Math.floor(v / q) * q;
+
+function fail(rep, why) { rep.why = why; return null; }
 
 /** 4-connected labelling of the set cells. */
 function labelLobes(grid) {

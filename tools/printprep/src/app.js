@@ -37,6 +37,7 @@ export async function boot({ workerSources, baseUrl }) {
     proc: defaultProcess(),
     fitIdx: DEFAULT_FIT,
     sMax: 25,
+    mateType: 'dovetail',   // profiled cut is the default; 'snap' is the stamped boss
     model: null,          // {geomId, csgId, name, summary, group}
     parts: [],            // see mkPart
     joints: [],           // {id, planeIdx, aPartId, bPartId, axis, S, hb, sites, frame, maleOn, swap}
@@ -59,6 +60,9 @@ export async function boot({ workerSources, baseUrl }) {
   // ---------------------------------------------------------------- stage
   const stageEl = document.getElementById('stage');
   const stage = createStage(stageEl);
+  // A handle on the running tool, for the console and for automated checks.
+  // Read-only by convention; nothing in the app reads it back.
+  if (typeof window !== 'undefined') window.printPrep = { state, stage, geom, csg };
   buildBed(stage, state.bed, PRINTERS[state.printerKey].excludeArea);
   const clipPlane = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0);
   const clipping = [];    // filled when section is on
@@ -69,7 +73,8 @@ export async function boot({ workerSources, baseUrl }) {
   const L = document.getElementById('pane-l');
   const R = document.getElementById('pane-r');
   buildLeftPanel();
-  buildRightPanel();
+  buildPartCard();
+  buildTopActions();
   buildHud();
   buildDropZone();
 
@@ -143,7 +148,10 @@ export async function boot({ workerSources, baseUrl }) {
     state.manualPlanes = []; state.cutMode = false;
     state.model = null; state.parts = []; state.joints = []; state.plan = null;
     state.plates = []; state.selected = null; state.view = 'model';
-    refreshParts(); refreshModelCard(); refreshActions(); refreshSelected(); refreshCuts();
+    // Seams outlive their parts otherwise, and the joints card lists a dozen
+    // "? <-> ? · glue seam" rows for a model that is no longer loaded.
+    state.seams = []; state.plainSeams = 0; state.islandCount = 0;
+    refreshParts(); refreshModelCard(); refreshActions(); refreshSelected(); refreshCuts(); refreshQuality();
   }
   function disposeGroup(g) {
     g?.traverse((o) => { o.geometry?.dispose(); if (o.material?.dispose) o.material.dispose(); });
@@ -162,10 +170,12 @@ export async function boot({ workerSources, baseUrl }) {
         id: m.geomId, bed: state.bed, sMax: state.sMax, fit: fit(),
         nozzle: printer().nozzle, manualPlanes: useManual,
       }, { onProgress: (p) => setProgress(0.05 + p.frac * 0.3) });
+      console.debug('[split plan]', plan.planes.length, 'planes;', plan.log);
       state.cutMode = false;
       for (const e of state.manualPlanes) e.helper.visible = false;
       refreshCuts();
       state.plan = { ...plan, manualPlanes };
+      state.planOptions = plan.options && plan.options.length > 1 ? plan.options : null;
 
       if (!plan.planes.length) {
         // No planes can mean two very different things, and conflating them
@@ -175,22 +185,318 @@ export async function boot({ workerSources, baseUrl }) {
         setProgress(1);
         return;
       }
-      const missing = plan.placements.filter((p) => !p).length;
       await executePlan(plan);
       const bad = state.parts.filter((p) => p.summary.size.some((d, i) => d > [state.bed.x, state.bed.y, state.bed.z][i])).length;
+      const plain = state.plainSeams || 0;
+      const islands = state.islandCount || 0;
+      const isle = islands
+        ? ` ${islands} cut piece${islands === 1 ? '' : 's'} fell into separate lumps and ${islands === 1 ? 'was' : 'were'} listed separately.`
+        : '';
       if (!plan.fits && bad) {
         say(`${state.parts.length} parts, but ${bad} still exceed${bad === 1 ? 's' : ''} the printer - the search ran out of workable cuts (${plan.log[plan.log.length - 1]}). Add manual cuts for the red parts.`, true, 9000);
-      } else if (missing) {
-        say(`${state.parts.length} parts. ${missing} seam${missing === 1 ? ' has' : 's have'} no room for a snap joint (under 12 mm of clear material) - those are plain glue seams, shown without joint markers.`, true, 8000);
+      } else if (plain) {
+        say(`${state.parts.length} parts, ${state.joints.length} of ${state.seams.length} seams jointed. ${plain} seam${plain === 1 ? ' has' : 's have'} no room for a snap joint (under 12 mm of clear material) - ${plain === 1 ? 'it is a plain glue seam' : 'those are plain glue seams'}, shown without joint markers.${isle}`, true, 8000);
+      } else {
+        say(`${state.parts.length} parts, ${state.joints.length} jointed seam${state.joints.length === 1 ? '' : 's'}.${isle} Check them in Ghost view.`);
       }
       setProgress(1);
-      if (!missing && (plan.fits || !bad)) {
-        say(`${state.parts.length} parts, ${state.joints.length} joint face${state.joints.length === 1 ? '' : 's'}. Check them in Ghost view.`);
-      }
     } catch (e) {
       setProgress(0);
       say(e.message, true, 7000);
     }
+  }
+
+  /**
+   * A seam's identity, stable across re-executions of the same plan.
+   *
+   * Component handles are minted fresh on every run, so "swap this joint" has
+   * to name the seam by where it is, not by which objects happened to hold it
+   * last time. The plan replays deterministically, so the plane it lies on plus
+   * the two pre-stamp box centres name it exactly.
+   */
+  const seamKey = (seam) => {
+    const c = (bb) => [0, 1, 2].map((k) => ((bb.min[k] + bb.max[k]) / 2).toFixed(1)).join(',');
+    return `${seam.planeIdx}|${c(seam.a.bbox)}|${c(seam.b.bbox)}`;
+  };
+
+  /**
+   * Which of a profiled cut's tabs belongs to this seam.
+   *
+   * One plane can carry a tab per rail it crosses and produce a seam per pair
+   * of components, so the two lists have to be matched by position: the tab
+   * whose centre lies in the material both components share along the seam.
+   */
+  const tabForSeam = (seam, prof) => {
+    // Project each box onto the seam's own along-axis. That axis is only a
+    // world axis for a grid cut; on a radial seam it points any which way, so
+    // the interval has to come from the box's support along u rather than from
+    // one of its coordinates.
+    const onU = (bb) => {
+      let c = 0, r = 0;
+      for (let k = 0; k < 3; k++) {
+        c += prof.u[k] * (bb.min[k] + bb.max[k]) / 2;
+        r += Math.abs(prof.u[k]) * (bb.max[k] - bb.min[k]) / 2;
+      }
+      return [c - r, c + r];
+    };
+    const [aLo, aHi] = onU(seam.a.bbox), [bLo, bHi] = onU(seam.b.bbox);
+    const lo = Math.max(aLo, bLo), hi = Math.min(aHi, bHi);
+    const inside = prof.tabs.find((t) => t.at >= lo - 0.5 && t.at <= hi + 0.5);
+    if (inside) return inside;
+    // Nearest, when nothing is strictly inside.
+    //
+    // The tab's position comes from the section of the PARENT; the seam's comes
+    // from projecting two axis-aligned boxes of the finished components, and on
+    // a part that is not axis-aligned those two disagree by a few millimetres.
+    // Measured on the frame: tabs at u = 408 against a contact projecting to
+    // 397.2..402.9, so containment failed on 63 seams that the cut had actually
+    // jointed - the geometry was there and the report said glue. Attributing to
+    // the nearest tab describes what was cut instead of what the boxes imply.
+    const mid = (lo + hi) / 2;
+    let best = null, bestD = Infinity;
+    for (const t of prof.tabs) {
+      const d = Math.abs(t.at - mid);
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    if (!best) return null;
+    const reach = (best.width || 0) / 2 + Math.max(6, (hi - lo));
+    return bestD <= reach ? best : null;
+  };
+
+  /**
+   * A cut set that respects the model's own symmetry.
+   *
+   * The planner cuts an axis-aligned grid, and a grid is at best four-fold
+   * symmetric, so an eight-armed wheel comes apart into one-offs: 24 parts of
+   * 20 distinct shapes on the EEDX wheel, 16 of them unique. What makes parts
+   * repeat is not cutting each arm "the same" one at a time - it is choosing a
+   * set of planes that maps onto ITSELF under the model's rotation. Do that and
+   * the partition is symmetric too, so the pieces come out in orbits of
+   * identical parts, whatever order the tree happens to apply them in.
+   *
+   * Two families, both invariant under a turn of one sector:
+   *   radial   planes containing the axis, one per sector boundary. A plane
+   *            through the axis covers two opposite boundaries at once, so an
+   *            even order needs only half as many.
+   *   rings    planes perpendicular to each sector's own bisector at a fixed
+   *            radius - together a regular polygon, which is as close to a
+   *            circle as flat cuts get.
+   *
+   * The sector count may have to be a MULTIPLE of the symmetry order: eight
+   * sectors of a 1 m wheel are 383 mm across at the rim and no bed takes that.
+   * A multiple of a symmetry is still a symmetry, so subdividing is free.
+   */
+  function symmetricPlanes(sym, bed) {
+    const margin = 10;
+    const lim = Math.max(20, Math.min(bed.x, bed.y) - margin);
+    const R = sym.rMax, c = sym.centre;
+    if (!(sym.order >= 2) || !(R > 0)) return null;
+
+    // Enough sectors that the outermost band fits across, and still a multiple
+    // of the order so the set stays invariant.
+    let sectors = sym.order;
+    while (2 * R * Math.sin(Math.PI / sectors) > lim && sectors < 256) sectors += sym.order;
+    const step = 2 * Math.PI / sectors;
+    const planes = [];
+
+    // ONE CUT PER RAY, not one per diameter.
+    //
+    // A plane through the axis covers two opposite rays at once, so sector k
+    // and sector k+8 end up on OPPOSITE sides of the same plane - and the tab
+    // always rides on one side, so they get opposite joint genders. That is
+    // why the sectors came out in identical PAIRS rather than all alike: each
+    // was a mirror of its opposite, carrying a socket where the other carried
+    // a tab.
+    //
+    // Masking each cut to the half-disc containing its own ray makes the cut
+    // local, so every sector ends up with a tab on one edge and a socket on
+    // the other - the same handedness the whole way round, which is what makes
+    // them interchangeable.
+    for (let k = 0; k < sectors; k++) {
+      const t = sym.phaseRad + k * step;
+      const n = [-Math.sin(t), Math.cos(t), 0];
+      const ray = [Math.cos(t), Math.sin(t), 0];
+      planes.push({
+        n, d: n[0] * c[0] + n[1] * c[1],
+        only: [{ n: ray, d: ray[0] * c[0] + ray[1] * c[1] }],
+      });
+    }
+
+    // Ring cuts belong to ONE sector each.
+    //
+    // Without saying so they are infinite planes and each one slices all
+    // sixteen sectors: measured, 280 parts where Auto Split makes 35. The two
+    // radial planes bounding a sector are exactly the halfspaces that say
+    // "this cut is for that spoke", and manualTree now honours them.
+    const bands = Math.max(1, Math.ceil(R / lim));
+    for (let j = 1; j < bands; j++) {
+      const rad = (j * R) / bands;
+      for (let k = 0; k < sectors; k++) {
+        const b = sym.phaseRad + (k + 0.5) * step;
+        const n = [Math.cos(b), Math.sin(b), 0];
+        const lo = sym.phaseRad + k * step, hi = sym.phaseRad + (k + 1) * step;
+        const inward = (t, sign) => {
+          const nn = [-Math.sin(t) * sign, Math.cos(t) * sign, 0];
+          return { n: nn, d: nn[0] * c[0] + nn[1] * c[1] };
+        };
+        planes.push({ n, d: n[0] * c[0] + n[1] * c[1] + rad, only: [inward(lo, 1), inward(hi, -1)] });
+      }
+    }
+    return { planes, sectors, bands };
+  }
+
+  /**
+   * Snap a nearly-symmetric model onto its own symmetry, then split it.
+   *
+   * A model that only ALMOST repeats cannot come apart into identical parts,
+   * however good the planner is - the parts are not identical in the source.
+   * The EEDX wheel repeats to within 4.6% at a half turn and 6.8% at an eighth,
+   * and the error grows with the order, which is the signature of arms that sit
+   * at slightly irregular angles rather than one bad arm. Rebuilding it from a
+   * single sector makes it exact.
+   *
+   * This changes the model, so it says by how much and leaves the decision with
+   * the user.
+   */
+  async function makeSymmetric() {
+    const m = state.model;
+    if (!m?.csgId) { say('Import a model first.', true, 5000); return; }
+    try {
+      setProgress(0.1);
+      const sym = await geom.call('geom.symmetry', { id: m.geomId, tol: 0.12 });
+      if (sym.order < 4) {
+        setProgress(0);
+        say(`No usable rotational symmetry about Z (best order ${sym.order}) - nothing to snap to.`, true, 7000);
+        return;
+      }
+      setProgress(0.4);
+      const r = await csg.call('csg.symmetrize', { solidId: m.csgId, order: sym.order, centre: sym.centre });
+      const mesh = await csg.call('csg.mesh', { solidId: r.solidId });
+      const id = `m${state.seq++}`;
+      const adopted = await geom.call('geom.adopt', { id, name: `${m.name} (symmetric)`,
+        vertProperties: mesh.vertProperties, triVerts: mesh.triVerts });
+      // Replace the model in place; the old solid and analysis go with it.
+      disposeGroup(m.group); stage.world.remove(m.group);
+      geom.call('geom.free', { id: m.geomId });
+      csg.call('csg.release', { solidIds: [m.csgId] });
+      const group = new THREE.Group();
+      const mesh3 = meshFromRender(adopted.render, solidMaterial(0x8fa8bc, clipping));
+      const edges = linesFromSegs(adopted.edges, edgeMaterial(clipping));
+      group.add(mesh3, edges);
+      centreOnBed(group, adopted.summary.bbox);
+      state.modelOffset = group.position.clone();
+      stage.world.add(group);
+      state.model = { geomId: id, csgId: r.solidId, csgError: null, name: adopted.summary.name,
+        summary: adopted.summary, group, mesh: mesh3, edges };
+      stage.frameObject(shiftedBbox(adopted.summary.bbox, group.position));
+      refreshModelCard(); refreshActions();
+      setProgress(1);
+      say(`Snapped to ${r.order}-fold symmetry: ${r.movedMm3.toFixed(0)} mm3 moved, ${r.movedPct.toFixed(2)}% of the model. Re-run Auto Split for identical parts.`, false, 9000);
+    } catch (e) { setProgress(0); say(e.message, true, 8000); }
+  }
+
+  async function symmetricSplit() {
+    const m = state.model;
+    if (!m) return;
+    if (!m.csgId) { say(`Cannot split: ${m.csgError}`, true, 7000); return; }
+    try {
+      setProgress(0.05);
+      const sym = await geom.call('geom.symmetry', { id: m.geomId });
+      if (sym.order < 2) {
+        setProgress(0);
+        say(`No rotational symmetry found about Z - nothing to align cuts to. Use Auto Split.`, true, 7000);
+        return;
+      }
+      const built = symmetricPlanes(sym, state.bed);
+      if (!built) { setProgress(0); say('Could not build a symmetric cut set.', true, 6000); return; }
+      state.symmetry = sym;
+      // Radial cuts make the sectors identical; ring cuts shorten each one.
+      // but the ring cuts that shorten each sector are infinite PLANES, and
+      // manualTree applies every plane to every piece it crosses - so each
+      // ring cut slices all sixteen sectors instead of its own. On the wheel
+      // that turned 35 parts into 280, with simplicity 35 against 24 and
+      // strength 29 against 55: worse on every axis it was meant to improve.
+      //
+      // The fix is not a tweak to the plane set. A plan node names one parent
+      // piece and two children, but nothing lets a cut say "only this piece" -
+      // so sector-local ring cuts need the plan format to carry per-piece
+      // assignment first. Refusing beats quietly producing 280 parts.
+      say(`${sym.order}-fold symmetry (${(sym.err * 100).toFixed(2)}% mismatch) - `
+        + `${built.sectors} sectors x ${built.bands} bands.`);
+      await autoSplit(built.planes);
+    } catch (e) { setProgress(0); say(e.message, true, 7000); }
+  }
+
+  /**
+   * Cut with the joint profile instead of a plane, where that is the honest
+   * thing to do.
+   *
+   * The stamped EVF joint needs about 12 mm of cut face to sit on. Below that
+   * `placeJoints` gives up and the seam comes back as glue - which is the whole
+   * reason the profiled cut exists: on thin stock the joint cannot be a boss on
+   * a face, so the cut path itself becomes the joint. Above that threshold the
+   * stamped joint is the proven one and this leaves it alone; the wheel's 10 mm
+   * sheet takes this path, the fork and the bracket do not.
+   *
+   * The tab list can only be measured here. The planner works on a triangle
+   * soup and never sees the solid, so which rails a seam crosses - and how wide
+   * each one is - is not knowable until the real parent is in hand.
+   */
+  // How thick stock has to be before a STAMPED joint can sit on its cut face.
+  //
+  // A square boss of side S needs S/sqrt(2) + margin of clearance from the
+  // face's edge all round, so a face only t thick can host the smallest useful
+  // 12 mm joint when t >= 2*(12/sqrt(2) + margin) - about 20 mm. This is the
+  // same test geom.plan makes before reserving protrusion, and the two have to
+  // agree or there is a band where each assumes the other will handle it.
+  // Measured in that band: a 12 mm lattice of 24 mm bars got NO joint at all -
+  // profiled declined because 12 is not under 12, stamped declined because 12
+  // is nowhere near 20 - on seams that comfortably take a 5.4 mm dovetail.
+  const stampedNeeds = () => 2 * (12 / Math.SQRT2 + Math.max(1.5, 2 * (printer().nozzle ?? 0.4)));
+  async function profiledCut(parentId, pl, idx, profiled) {
+    if (state.mateType === 'none' || state.mateType === 'snap') {
+      profiled.set(idx, { used: false, why: state.mateType === 'none' ? 'mating feature set to none' : 'stamped snap boss chosen' });
+      return null;
+    }
+    const sec = await csg.call('csg.seamSection', { solidId: parentId, plane: pl });
+    if (!sec.lumps.length) return null;
+    if (sec.thickness >= stampedNeeds()) {
+      profiled.set(idx, { used: false, why: `${sec.thickness.toFixed(1)} mm stock can take a stamped joint` });
+      return null;
+    }
+    // NO BOSS. A joint may only redistribute material across the face it is cut
+    // on: whatever the tab adds to one side is exactly what the socket takes
+    // from the other, so the two halves put back together are the solid they
+    // came from. The pad broke that - it welded material onto the rail that was
+    // never in the model, which is a different object, not a jointed one.
+    //
+    // The joint sizes itself from the face it has to live in. That face is the
+    // rail's width by the sheet's thickness, so its area is the only honest
+    // budget for how big the tab can be.
+    // EVERY SEAM GETS A MECHANISM.
+    //
+    // A dovetail needs an undercut plus a side wall either side of it, and thin
+    // stock has room for neither - which is why so many of the frame's seams
+    // came back as plain glue. Fingers need neither: they give up the undercut
+    // but locate the parts, resist the seam shearing or hinging, and roughly
+    // double the bonded area. So the dovetail is tried first because it is the
+    // stronger joint, and where it will not fit the seam falls to fingers
+    // rather than to nothing at all.
+    const want = state.mateType === 'puzzle' ? 'puzzle' : 'dovetail';
+    const r = await csg.call('csg.splitProfiled', {
+      solidId: parentId, plane: pl,
+      stock: { tabs: sec.lumps.map(() => ({})) },
+      opts: { type: want, clearance: fit().tol, faceThickness: sec.thickness, nozzle: printer().nozzle },
+    });
+    if (r.aId == null) { profiled.set(idx, { used: false, why: r.why }); return null; }
+    profiled.set(idx, {
+      used: true, tabs: r.tabs, maleOn: r.maleOn, jointed: r.jointed,
+      // The tab side overshoots the plane by the tab's own length; the seam
+      // finder has to know by how much or it will not see that side touching.
+      reach: Math.max(0, ...r.tabs.map((t) => (t.plain ? 0 : t.params.tabL))),
+      u: sec.u,
+    });
+    return r;
   }
 
   async function executePlan(plan) {
@@ -205,7 +511,7 @@ export async function boot({ workerSources, baseUrl }) {
       geom.call('geom.free', { id: p.id });
     }
     if (state.parts.length) csg.call('csg.release', { solidIds: state.parts.map((p) => p.csgId) });
-    state.parts = []; state.joints = []; state.plates = [];
+    state.parts = []; state.joints = []; state.plates = []; state.seams = [];
     refreshExport();
     // Work on a copy so the original solid survives for a re-plan.
     const rootCopy = await csg.call('csg.transform', { solidId: m.csgId, matrix: IDENT16 });
@@ -213,108 +519,251 @@ export async function boot({ workerSources, baseUrl }) {
     const parents = new Set(plan.planes.map((p) => p.parentId));
 
     setProgress(0.4);
+    const profiled = new Map();     // plane index -> what the profiled cut did
     for (let i = 0; i < plan.planes.length; i++) {
       const pl = plan.planes[i];
-      const r = await csg.call('csg.splitOne', { solidId: idMap.get(pl.parentId), plane: pl });
+      const parentId = idMap.get(pl.parentId);
+      let r = null;
+      try {
+        r = await profiledCut(parentId, pl, i, profiled);
+      } catch (e) {
+        // Every refusal is a fallback, never a failure: splitProfiled throws
+        // rather than cut a seam wrong, and it leaves the parent handle alone
+        // when it does, so the plain cut below can still have it.
+        profiled.set(i, { used: false, why: e.message });
+        r = null;
+      }
+      if (!r) r = await csg.call('csg.splitOne', { solidId: parentId, plane: pl });
       if (r.aId == null) throw new Error('a planned cut missed the model - re-run Auto Split');
       idMap.set(pl.aId, r.aId);
       idMap.set(pl.bId, r.bId);
       setProgress(0.4 + 0.15 * (i + 1) / plan.planes.length);
     }
 
-    // Stamp joints across every plane, between the leaf descendants that
-    // actually contain the sites.
-    const planeByParent = new Map(plan.planes.map((p) => [p.parentId, p]));
-    const descend = (planId, pt) => {
-      let cur = planId;
-      for (;;) {
-        const p = planeByParent.get(cur);
-        if (!p) return cur;
-        cur = (pt[0] * p.n[0] + pt[1] * p.n[1] + pt[2] * p.n[2] - p.d) >= 0 ? p.aId : p.bId;
+    // ---------------------------------------------------------------- pieces
+    // Every leaf becomes one or more COMPONENTS. A leaf whose material is in
+    // two disjoint lumps is not one part, and pretending otherwise produced
+    // "parts" that were two objects a metre apart sharing a colour, a row in
+    // the list and - worse - a single joint that bonded only one of them.
+    const leaves = [...new Set(plan.planes.flatMap((p) => [p.aId, p.bId]))].filter((id) => !parents.has(id));
+    let islands = 0, shards = 0, shardVol = 0;
+    const comps = [];
+    for (const leaf of leaves) {
+      const r = await csg.call('csg.decompose', { solidId: idMap.get(leaf) });
+      if (r.split) islands += r.parts.length - 1;
+      for (const c of r.parts) {
+        // Debris is not a part.
+        //
+        // A cut that grazes a rail's edge leaves a shard - measured on the
+        // symmetric frame, 20 of 56 "parts" were slivers of 0 to 27 mm3, one of
+        // them 1.1 x 0.5 mm, and every unique shard counted as its own distinct
+        // shape and wrecked the simplicity score. Nothing thinner than a couple
+        // of extrusions can be printed, let alone picked up and glued, so it is
+        // counted, its volume reported, and dropped.
+        const thin = Math.min(c.bbox.max[0] - c.bbox.min[0],
+                              c.bbox.max[1] - c.bbox.min[1],
+                              c.bbox.max[2] - c.bbox.min[2]);
+        if (thin < 2 * (printer().nozzle ?? 0.4) || c.volume < 1) {
+          shards++; shardVol += Math.max(0, c.volume);
+          csg.call('csg.release', { solidIds: [c.solidId] });
+          continue;
+        }
+        comps.push({ leaf, csgId: c.solidId, bbox: c.bbox, volume: c.volume, gid: `p${state.seq++}` });
       }
-    };
-
-    state.joints = [];
-    let jseq = 0;
-    for (let i = 0; i < plan.planes.length; i++) {
-      const pl = plan.planes[i], placed = plan.placements[i];
-      if (!placed) continue;
-      // A joint was placed on this plane's contact face when it had exactly two
-      // sides. Later cuts may have subdivided both sides, so different SITES on
-      // the same plane can now belong to different leaf pairs - stamping them
-      // all into one pair once put a joint bodily inside a third part and
-      // failed the containment audit. Group sites by the leaf pair that
-      // actually contains them, probing a little either side of the plane.
-      const groups = new Map();
-      let dropped = 0;
-      for (const site of placed.sites) {
-        // A site placed on the original, undivided face can end up within a
-        // joint's own footprint of a LATER cut. Its material-behind test knew
-        // nothing about that cut, so the stamped joint would poke out of the
-        // leaf - drop such sites and leave that patch of seam plain.
-        const nearOtherCut = plan.planes.some((q, qi) => qi !== i &&
-          Math.abs(q.n[0] * site.world[0] + q.n[1] * site.world[1] + q.n[2] * site.world[2] - q.d)
-            < placed.S / Math.SQRT2 + 2);
-        if (nearOtherCut) { dropped++; continue; }
-        const eps = 1.0;
-        const pa = site.world.map((v, k) => v + pl.n[k] * eps);
-        const pb = site.world.map((v, k) => v - pl.n[k] * eps);
-        const aLeaf = descend(pl.aId, pa);
-        const bLeaf = descend(pl.bId, pb);
-        const key = aLeaf + ':' + bLeaf;
-        if (!groups.has(key)) groups.set(key, { aLeaf, bLeaf, sites: [] });
-        groups.get(key).sites.push(site);
-      }
-      if (dropped) say(`${dropped} joint site${dropped === 1 ? '' : 's'} sat too close to another cut and ${dropped === 1 ? 'was' : 'were'} left as plain seam.`, false, 5000);
-      for (const g of groups.values()) {
-        const maleOn = state.plan?.swaps?.[i] ? 'A' : 'B';
-        const r = await csg.call('csg.stamp', {
-          aId: idMap.get(g.aLeaf), bId: idMap.get(g.bLeaf),
-          placement: { ...placed, sites: g.sites }, fit: fit(), maleOn,
-        });
-        if (!r.audit.ok) say(`A joint's containment audit failed (${(r.audit.maleContained * 100).toFixed(1)}% / ${(r.audit.femaleContained * 100).toFixed(1)}%) - inspect it in Ghost view.`, true, 8000);
-        idMap.set(g.aLeaf, r.aId);
-        idMap.set(g.bLeaf, r.bId);
-        state.joints.push({
-          id: `j${jseq++}`, planeIdx: i, aLeaf: g.aLeaf, bLeaf: g.bLeaf,
-          axis: r.meta.axis, S: placed.S, hb: r.meta.hb ?? placed.hb, depth: placed.depth,
-          sites: g.sites, frame: placed.frame, maleOn, audit: r.audit,
-        });
-      }
-      setProgress(0.55 + 0.15 * (i + 1) / plan.planes.length);
+      setProgress(0.55 + 0.05 * (leaves.indexOf(leaf) + 1) / leaves.length);
     }
 
-    // Materialise the leaves as parts.
-    const leafIds = [...idMap.keys()].filter((k) => !parents.has(k) || !plan.planes.some((p) => p.parentId === k));
-    const leaves = [...new Set(plan.planes.flatMap((p) => [p.aId, p.bId]))].filter((id) => !parents.has(id));
+    // Park each component's mesh in the geom worker so seams can be sectioned
+    // against real closed solids.
+    for (const c of comps) {
+      const mesh = await csg.call('csg.mesh', { solidId: c.csgId });
+      await geom.call('geom.stage', { id: c.gid, vertProperties: mesh.vertProperties, triVerts: mesh.triVerts });
+    }
+
+    // ---------------------------------------------------------------- seams
+    // A seam is a pair of components that face each other across one cut
+    // plane. Enumerating pairs - rather than planes - is what puts a joint on
+    // every place two parts actually meet: quartering a ring has four seams,
+    // not two, because plane X meets plane Y's halves twice over.
+    const parentOf = new Map();
+    for (const p of plan.planes) { parentOf.set(p.aId, p.parentId); parentOf.set(p.bId, p.parentId); }
+    const inSubtree = (leaf, node) => {
+      for (let c = leaf; ; c = parentOf.get(c)) {
+        if (c === node) return true;
+        if (!parentOf.has(c)) return false;
+      }
+    };
+    const span = (bbox, n) => {          // interval of n·x over the box
+      let lo = 0, hi = 0;
+      for (let k = 0; k < 3; k++) {
+        const a = n[k] * bbox.min[k], b = n[k] * bbox.max[k];
+        lo += Math.min(a, b); hi += Math.max(a, b);
+      }
+      return [lo, hi];
+    };
+    const TOUCH = 0.25;                  // mm: the cut face is exactly on the plane
+    const overlapsInPlane = (a, b, n) => {
+      // Compare the two boxes on the axes the plane does NOT run along. Boxes
+      // that only meet at a corner share no face worth jointing.
+      for (let k = 0; k < 3; k++) {
+        if (Math.abs(n[k]) > 0.5) continue;
+        const lo = Math.max(a.min[k], b.min[k]), hi = Math.min(a.max[k], b.max[k]);
+        if (hi - lo < 1) return false;
+      }
+      return true;
+    };
+
+    const seams = [];
+    for (let i = 0; i < plan.planes.length; i++) {
+      const pl = plan.planes[i];
+      // "Reaches the plane", not "ends exactly on it".
+      //
+      // Everything in the A subtree lies at or above d and everything in the B
+      // subtree at or below it, so asking whether a component reaches the plane
+      // is the same test as before for a plain cut - but it survives a profiled
+      // one, where the tab side overshoots by the tab's length. At 3.9 mm on
+      // the wheel's rails that is fifteen times TOUCH, so the old equality test
+      // dropped every profiled seam, and with it the joint row and the explode
+      // edge for a joint that was physically there.
+      const aSide = comps.filter((c) => inSubtree(c.leaf, pl.aId) && span(c.bbox, pl.n)[0] < pl.d + TOUCH);
+      const bSide = comps.filter((c) => inSubtree(c.leaf, pl.bId) && span(c.bbox, pl.n)[1] > pl.d - TOUCH);
+      for (const a of aSide) {
+        for (const b of bSide) {
+          if (!overlapsInPlane(a.bbox, b.bbox, pl.n)) continue;
+          seams.push({ planeIdx: i, plane: { n: pl.n, d: pl.d }, a, b });
+        }
+      }
+    }
+
+    // Site the joints on each seam from the real geometry. The other planes
+    // bounding either component are handed over as keep-out lines so a joint is
+    // never stamped across a neighbouring cut.
+    state.joints = [];
+    state.seams = seams;
+    let jseq = 0, plain = 0;
+    for (let s = 0; s < seams.length; s++) {
+      const seam = seams[s];
+      // A profiled seam is already mated - the joint IS the cut, so there is
+      // nothing to site and nothing to stamp, and no containment to audit
+      // because a joint shaped like the cut cannot poke out of its own part.
+      const prof = profiled.get(seam.planeIdx);
+      if (prof?.used) {
+        const tab = tabForSeam(seam, prof);
+        seam.profiled = true;
+        seam.why = tab?.why || null;
+        if (tab && !tab.plain) {
+          seam.placement = { profiled: true, grip: tab.params.grip, width: tab.width };
+          state.joints.push({
+            id: `j${jseq++}`, seamKey: seamKey(seam), planeIdx: seam.planeIdx,
+            kind: 'profiled', aComp: seam.a, bComp: seam.b,
+            axis: seam.plane.n.slice(), maleOn: prof.maleOn,
+            grip: tab.params.grip, tabL: tab.params.tabL, width: tab.width,
+            type: tab.params.type, sites: [], hb: 0,
+          });
+        } else {
+          seam.placement = null;
+          plain++;
+        }
+        setProgress(0.6 + 0.1 * (s + 1) / seams.length);
+        continue;
+      }
+      // Keep-outs: only the cuts that actually pass through one of these two
+      // components. A plane on the far side of the model draws a keep-out band
+      // across all of space, and including it would veto perfectly good sites
+      // on a seam it has nothing to do with.
+      const crosses = (q, bbox) => {
+        const [lo, hi] = span(bbox, q.n);
+        return lo - 1 < q.d && q.d < hi + 1;
+      };
+      // A plane at a different index can still be the SAME plane in space: the
+      // tree cuts each half of a quartered ring at y = 0 separately, so plane 1
+      // and plane 2 are geometrically identical. Excluding by index alone let
+      // plane 2's keep-out band cover the whole of plane 1's contact face, and
+      // both of the ring's side seams silently came back plain.
+      const coincident = (q) => {
+        const dp = q.n[0] * seam.plane.n[0] + q.n[1] * seam.plane.n[1] + q.n[2] * seam.plane.n[2];
+        if (Math.abs(Math.abs(dp) - 1) > 1e-3) return false;
+        return Math.abs(q.d - Math.sign(dp) * seam.plane.d) < 0.5;
+      };
+      const avoid = plan.planes
+        .filter((q, qi) => qi !== seam.planeIdx && !coincident(q) &&
+          (crosses(q, seam.a.bbox) || crosses(q, seam.b.bbox)))
+        .map((q) => ({ n: q.n, d: q.d }));
+      let placed = null;
+      try {
+        const r = await geom.call('geom.seamJoints', {
+          aId: seam.a.gid, bId: seam.b.gid, plane: seam.plane,
+          sMax: state.sMax, fit: fit(), nozzle: printer().nozzle, avoid,
+        });
+        placed = r?.placed || null;
+        seam.why = r?.why || null;
+      } catch (e) { placed = null; seam.why = e.message; }
+      seam.placement = placed;
+      if (!placed) {
+        // Say why BOTH answers were unavailable. Reporting only the stamped
+        // joint's reason on stock too thin to ever take one is half the story,
+        // and the half that cannot be acted on.
+        if (prof && !prof.used && prof.why) seam.why = `${seam.why || 'no stamped joint'}; cut joint: ${prof.why}`;
+        plain++;
+        continue;
+      }
+
+      const key = seamKey(seam);
+      const maleOn = state.plan?.swaps?.[key] ? 'A' : 'B';
+      const r = await csg.call('csg.stamp', {
+        aId: seam.a.csgId, bId: seam.b.csgId,
+        placement: placed, fit: fit(), maleOn,
+      });
+      if (!r.audit.ok) say(`A joint's containment audit failed (${(r.audit.maleContained * 100).toFixed(1)}% / ${(r.audit.femaleContained * 100).toFixed(1)}%) - inspect it in Ghost view.`, true, 8000);
+      seam.a.csgId = r.aId;
+      seam.b.csgId = r.bId;
+      state.joints.push({
+        id: `j${jseq++}`, seamKey: key, planeIdx: seam.planeIdx,
+        aComp: seam.a, bComp: seam.b,
+        axis: r.meta.axis, S: placed.S, hb: r.meta.hb ?? placed.hb, depth: placed.depth,
+        sites: placed.sites, frame: placed.frame, maleOn, audit: r.audit,
+      });
+      setProgress(0.6 + 0.1 * (s + 1) / seams.length);
+    }
+    state.plainSeams = plain;
+    state.islandCount = islands;
+    state.shardCount = shards; state.shardVolume = shardVol;
+    state.profiledPlanes = profiled;
+
+    // ---------------------------------------------------------------- parts
     if (state.model) state.model.group.visible = false;
     state.parts = [];
     let pi = 0;
-    for (const leaf of leaves) {
-      const csgId = idMap.get(leaf);
-      const mesh = await csg.call('csg.mesh', { solidId: csgId });
-      const gid = `p${state.seq++}`;
+    for (const c of comps) {
+      const mesh = await csg.call('csg.mesh', { solidId: c.csgId });
+      const name = `Part ${pi + 1}`;
       const adopted = await geom.call('geom.adopt', {
-        id: gid, name: `Part ${pi + 1}`,
-        vertProperties: mesh.vertProperties, triVerts: mesh.triVerts,
+        id: c.gid, name, vertProperties: mesh.vertProperties, triVerts: mesh.triVerts,
       });
-      const part = mkPart(gid, csgId, `Part ${pi + 1}`, adopted, pi);
-      part.planLeaf = leaf;
+      const part = mkPart(c.gid, c.csgId, name, adopted, pi);
+      part.planLeaf = c.leaf;
+      part.volume = c.volume;
+      c.partId = part.id;
       state.parts.push(part);
       stage.world.add(part.group);
       pi++;
-      setProgress(0.7 + 0.25 * pi / leaves.length);
+      setProgress(0.7 + 0.25 * pi / comps.length);
     }
+    await geom.call('geom.unstage', { ids: comps.map((c) => c.gid) });
 
     // Joint <-> part links, then joint preview solids for the ghost/exploded views.
     for (const j of state.joints) {
-      j.aPartId = state.parts.find((p) => p.planLeaf === j.aLeaf)?.id;
-      j.bPartId = state.parts.find((p) => p.planLeaf === j.bLeaf)?.id;
+      j.aPartId = j.aComp.partId;
+      j.bPartId = j.bComp.partId;
+    }
+    for (const seam of seams) {
+      seam.aPartId = seam.a.partId;
+      seam.bPartId = seam.b.partId;
     }
     await buildJointPreviews();
     await orientAll();
     layoutPartsOnBed();
-    refreshParts(); refreshActions();
+    refreshParts(); refreshActions(); refreshExport(); refreshQuality(); refreshPlanOptions();
     setView('model');
   }
 
@@ -338,6 +787,10 @@ export async function boot({ workerSources, baseUrl }) {
 
   async function buildJointPreviews() {
     for (const j of state.joints) {
+      // A profiled joint has no separate solid to preview - it is the shape of
+      // the seam, already in both parts, and it shows up in Ghost view as the
+      // parts themselves.
+      if (j.kind === 'profiled') { j.siteMeshes = []; continue; }
       const prev = await csg.call('csg.jointPreview', { S: j.S, fit: fit() });
       const flip = j.maleOn === 'A';
       const nDir = flip ? j.frame.n.map((v) => -v) : j.frame.n.slice();
@@ -368,7 +821,7 @@ export async function boot({ workerSources, baseUrl }) {
       const cutNormals = jointAxes.slice();
       const joints = state.joints
         .filter((j) => j.aPartId === part.id || j.bPartId === part.id)
-        .flatMap((j) => j.sites.map((s) => ({ center: s.world, S: j.S })));
+        .flatMap((j) => (j.sites || []).map((s) => ({ center: s.world, S: j.S })));
       try {
         part.orientCands = await geom.call('geom.orient', {
           id: part.id, bed: state.bed, jointAxes, cutNormals, joints,
@@ -545,6 +998,10 @@ export async function boot({ workerSources, baseUrl }) {
     }
     explodeRow.style.display = mode === 'explode' ? '' : 'none';
 
+    // The stage is a CAD void everywhere but Plates. A build plate under an
+    // assembled model is scenery: it says nothing about the model, and it puts
+    // a grid behind every joint you are trying to look at.
+    stage.bedGroup.visible = platesOn;
     if (platesOn) applyPlateLayout();
     else restoreHomeLayout();
     if (mode === 'explode') animateExplode();
@@ -587,11 +1044,18 @@ export async function boot({ workerSources, baseUrl }) {
     const partsInfo = state.parts.map((p) => ({
       id: p.id, volume: p.summary?.bbox ? boxVol(p.summary.bbox) : 1,
       size: p.summary ? p.summary.size : [50, 50, 50],
+      bbox: p.summary?.bbox || null,
     }));
-    const jointsInfo = state.joints
-      .filter((j) => j.aPartId && j.bPartId)
-      .map((j) => ({ aId: j.aPartId, bId: j.bPartId, axis: j.axis, hb: j.hb }));
-    explodeMap = explodeVectors(partsInfo, jointsInfo);
+    // Every seam is an edge, jointed or not. A glue seam still means "these two
+    // came apart here", and the view is only honest if it opens along it.
+    const seamInfo = (state.seams || [])
+      .filter((s) => s.aPartId && s.bPartId)
+      .map((s) => ({
+        aId: s.aPartId, bId: s.bPartId,
+        axis: s.plane.n.slice(),
+        hb: state.joints.find((j) => j.aPartId === s.aPartId && j.bPartId === s.bPartId)?.hb || 0,
+      }));
+    explodeMap = explodeVectors(partsInfo, seamInfo);
     applyExplode();
   }
   function applyExplode() {
@@ -749,6 +1213,23 @@ export async function boot({ workerSources, baseUrl }) {
 
   // ================================================================ UI: left
   var actionsCard, modelCard, fitSliderCtl, cutsCard;
+  /**
+   * A card that folds. The rail carries five sections now that the right panel
+   * is gone, and all of them at once is a wall - so everything but Actions
+   * starts shut and remembers nothing, which is the honest default when the
+   * tool has just opened and there is nothing to inspect yet.
+   */
+  function foldCard(title, open, ...children) {
+    const chev = el('span', { class: 'chev' }, '\u25be');
+    const t = el('div', { class: 'card-t fold' }, title, chev);
+    const body = el('div', { class: 'card-body' }, ...children);
+    const c = el('div', { class: 'card' + (open ? '' : ' shut') }, t, body);
+    t.addEventListener('click', () => c.classList.toggle('shut'));
+    c.body = body;
+    c.head = t;
+    return c;
+  }
+
   function buildLeftPanel() {
     // Import
     const fileInput = el('input', { type: 'file', accept: '.stl', style: 'display:none' });
@@ -781,12 +1262,12 @@ export async function boot({ workerSources, baseUrl }) {
       printerSel.value = 'custom';
       buildBed(stage, state.bed, []);
     }
-    L.append(card('Printer',
+    const printerCard = foldCard('Printer', false,
       row('Preset', printerSel),
       row('Volume X', ...bedX.nodes),
       row('Volume Y', ...bedY.nodes),
       row('Volume Z', ...bedZ.nodes),
-    ));
+    );
 
     // Global print settings
     const layerSel = select(QUALITIES.map((q) => ({ value: String(q.h), label: `${q.h.toFixed(2)} mm — ${q.name}` })),
@@ -802,33 +1283,57 @@ export async function boot({ workerSources, baseUrl }) {
     const infill = num(state.proc.infillPct, { min: 0, max: 100, unit: '%', onchange: (v) => state.proc.infillPct = v });
     const patSel = select(INFILL_PATTERNS.map((p) => ({ value: p, label: p })), state.proc.infillPattern,
       (v) => state.proc.infillPattern = v);
-    L.append(card('Print settings',
+    const printCard = foldCard('Print settings', false,
       row('Material', matSel),
       row('Layer height', layerSel),
       row('Walls', ...walls.nodes),
       row('Infill', ...infill.nodes),
       row('Pattern', patSel),
       checkbox('Allow supports', state.proc.supports, (v) => state.proc.supports = v),
-      el('div', { class: 'note' }, 'These are the plate-wide settings. Each part can override its own on the right, and overrides travel into the 3MF.'),
-    ));
+      el('div', { class: 'note' }, 'Plate-wide. A part can override its own from its card, and overrides travel into the 3MF.'),
+    );
 
     // Joint
+    const MATES = [
+      { value: 'dovetail', label: 'Dovetail — cut through the sheet' },
+      { value: 'puzzle', label: 'Puzzle — round head, flat print only' },
+      { value: 'snap', label: 'Snap boss — needs a 12 mm face' },
+      { value: 'none', label: 'None — plain glue seams' },
+    ];
+    const matePreview = el('div', { class: 'note', style: 'margin:2px 0 6px' }, '');
+    const describeMate = () => {
+      const t = { dovetail: 'A tab cut through the full thickness. Vertical walls printed flat, no supports, and nothing added to the model - the tab is material the other half gave up.',
+                  puzzle: 'Round head on a waist. Grips harder than a dovetail for the same width, but the undercut is a true overhang printed on edge.',
+                  snap: 'The EVF boss stamped on the cut face. Strongest option, but it needs about 12 mm of clear face and thin stock has none.',
+                  none: 'Every seam plain. Butt faces, glued.' }[state.mateType] || '';
+      matePreview.textContent = t;
+    };
+    const mateSel = select(MATES, state.mateType, (v) => { state.mateType = v; describeMate();
+      if (state.parts.length) say('Mating feature changed - re-run Auto Split to recut the seams.', false, 5000); });
+    describeMate();
+    jointsCard = el('div', { style: 'margin-top:9px' });
+    qualityCard = el('div', { style: 'margin-top:9px' });
+    planOptCard = el('div', { style: 'margin-top:9px' });
     fitSliderCtl = steppedSlider(FIT_STOPS, state.fitIdx, (i) => {
       state.fitIdx = i;
       if (state.parts.length) say('Fit changed - re-run Auto Split to restamp the joints with the new clearances.', false, 5000);
     });
     const sMaxN = num(state.sMax, { min: 12, max: 40, unit: 'mm', onchange: (v) => state.sMax = Math.max(12, v) });
-    L.append(card('Joints',
+    const jointsSetCard = foldCard('Joints', false,
+      row('Mating feature', mateSel),
+      matePreview,
       rowInfo('Fit', 'Clearance between the halves. Standard is the design default; print the coupon and move one stop at a time if it binds or rattles.', el('span')),
       fitSliderCtl.wrap,
       row('Max size', ...sMaxN.nodes),
       el('div', { class: 'btnrow', style: 'margin-top:7px' },
         button('Print fit coupon', exportCoupon, 'g sm')),
-    ));
+      qualityCard,
+      planOptCard,
+      jointsCard,
+    );
 
     // Manual cuts
-    cutsCard = card('Cuts', el('div', { class: 'empty' }, 'Optional. Turn on Place cuts, then click a face to add a cut in its plane, or a bore to cut square to it. Auto Split uses your cuts when any exist.'));
-    L.append(cutsCard);
+    cutsCard = foldCard('Cuts', false, el('div', { class: 'empty' }, 'Optional. Turn on Place cuts, then click a face to add a cut in its plane, or a bore to cut square to it. Auto Split uses your cuts when any exist.'));
     refreshCuts();
 
     // Actions
@@ -836,22 +1341,29 @@ export async function boot({ workerSources, baseUrl }) {
       el('div', { class: 'btnrow' },
         button('Auto Split', () => autoSplit(), ''),
         button('Auto Chamfer', autoChamfer, 'g'),
+        button('Symmetrise', makeSymmetric, 'g'),
         button('Auto-Arrange', arrange, 'g')),
       el('div', { class: 'note' },
-        'Split cuts the model into printer-sized parts and stamps snap joints into every cut. Chamfer eases convex right angles. Arrange packs the parts onto plates.'),
+        'Split cuts the model into printer-sized parts and joints every seam it can. Chamfer eases convex right angles. Arrange packs the parts onto plates.'),
     );
-    L.append(actionsCard);
+
+    // The recorded order: what you DO, then how the joints behave, then how it
+    // prints, then which machine. Settings you touch once live at the bottom.
+    L.append(actionsCard, jointsSetCard, cutsCard, printCard, printerCard);
     refreshActions();
+    refreshJoints();
   }
 
   function refreshCuts() {
     if (!cutsCard) return;
-    cutsCard.innerHTML = '';
+    const cutsBody = cutsCard.body || cutsCard;
+    cutsBody.innerHTML = '';
     const toggle = button(state.cutMode ? 'Placing cuts — click the model' : 'Place cuts', () => {
       state.cutMode = !state.cutMode;
       refreshCuts();
     }, state.cutMode ? 'sm' : 'g sm');
-    cutsCard.append(el('div', { class: 'card-t' }, 'Cuts ', el('span', { class: 'n' }, state.manualPlanes.length || '')), toggle);
+    if (cutsCard.head) { const n = state.manualPlanes.length; cutsCard.head.firstChild.textContent = n ? `Cuts (${n})` : 'Cuts'; }
+    cutsBody.append(toggle);
     if (!state.manualPlanes.length) {
       cutsCard.append(el('div', { class: 'note' },
         'Optional. Click a face to add a cut in its plane, a bore to cut square to its axis. With no cuts placed, Auto Split chooses its own.'));
@@ -869,7 +1381,7 @@ export async function boot({ workerSources, baseUrl }) {
         slider,
         button('×', () => removeManualPlane(entry), 'g sm')));
     });
-    cutsCard.append(el('div', { class: 'note' }, 'Sliders move each cut along its own normal.'));
+    cutsBody.append(el('div', { class: 'note' }, 'Sliders move each cut along its own normal.'));
   }
 
   function refreshActions() {
@@ -903,19 +1415,231 @@ export async function boot({ workerSources, baseUrl }) {
   const fmtSize = (s) => s.map((v) => Math.round(v)).join(' × ');
 
   // ================================================================ UI: right
-  var partsList, selectedCard, exportCard, jointsCard;
-  function buildRightPanel() {
-    partsList = el('div', { class: 'plist' });
-    R.append(el('div', { class: 'card flush' },
-      el('div', { class: 'card-t', style: 'padding:11px 14px 0' }, 'Parts ',
-        el('span', { class: 'n', id: 'part-count' }, '')),
-      partsList));
-    jointsCard = card('Joints', el('div', { class: 'empty' }, 'Joints appear after a split.'));
-    R.append(jointsCard);
-    selectedCard = card('Selected part', el('div', { class: 'empty' }, 'Click a part to inspect it.'));
-    R.append(selectedCard);
-    exportCard = card('Export', el('div', { class: 'empty' }, 'Arrange first, then export.'));
-    R.append(exportCard);
+  var partsList, jointsCard, qualityCard, planOptCard;
+  /**
+   * The per-part card, which is the whole of the old right panel.
+   *
+   * Hover a part and it follows the pointer; click and it pins, so you can
+   * reach into it without the thing you are reading sliding away. Esc unpins.
+   * The build plate lives HERE and in Plates view - the main stage stays a CAD
+   * void, because a plate under an assembled model is scenery that tells you
+   * nothing about the model.
+   */
+  var partCard, pinnedPart = null, hoverPart = null;
+
+  var exportModal, exportBody, exportBtn;
+  function buildTopActions() {
+    const host = document.getElementById('pp');
+    exportBtn = button('Export', () => openExport(), 'sm');
+    exportBtn.disabled = true;
+    document.body.append(el('div', { class: 'top-actions' }, exportBtn));
+    exportBody = el('div');
+    exportModal = el('div', { class: 'modal-back' },
+      el('div', { class: 'modal' }, el('h3', {}, 'Export'), exportBody));
+    exportModal.addEventListener('click', (e) => { if (e.target === exportModal) closeExport(); });
+    document.body.append(exportModal);
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeExport(); });
+  }
+  function openExport() { refreshExport(); exportModal.classList.add('on'); }
+  function closeExport() { if (exportModal) exportModal.classList.remove('on'); }
+
+  function buildPartCard() {
+    partCard = el('div', { class: 'pcard' });
+    document.getElementById('stage').append(partCard);
+    partsList = el('div');          // kept so refreshParts has somewhere to write
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && pinnedPart) { pinnedPart = null; showPartCard(null); }
+    });
+  }
+
+  function movePartCard(clientX, clientY) {
+    if (!partCard || pinnedPart) return;
+    const st = document.getElementById('stage').getBoundingClientRect();
+    const w = 236, pad = 14;
+    let x = clientX - st.left + 18, y = clientY - st.top + 14;
+    if (x + w + pad > st.width) x = clientX - st.left - w - 18;
+    if (y + partCard.offsetHeight + pad > st.height) y = Math.max(pad, st.height - partCard.offsetHeight - pad);
+    partCard.style.left = Math.max(pad, x) + 'px';
+    partCard.style.top = Math.max(pad, y) + 'px';
+  }
+
+  /**
+   * A live 3D view of the part in its own little scene.
+   *
+   * A flat footprint rectangle told you how much plate it eats and nothing
+   * about what it IS - which is the one question you have while pointing at an
+   * unfamiliar lump. One renderer and one scene are reused for every card; the
+   * part's geometry is borrowed, never cloned, so hovering a 400k-triangle
+   * wheel part costs a camera move rather than a copy.
+   */
+  var pv = null;
+  function partPreview() {
+    if (pv) return pv;
+    const W = 210, H = 158;
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    // updateStyle TRUE: without it the canvas keeps its device-pixel attribute
+    // size as its CSS size, and on a 2x display the preview renders twice as
+    // tall as the card it sits in and spills across the stage.
+    renderer.setSize(W, H, true);
+    renderer.domElement.style.display = 'block';
+    renderer.domElement.style.cursor = 'grab';
+    renderer.domElement.style.touchAction = 'none';
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(30, W / H, 0.5, 100000);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa2a8, 2.2));
+    const key = new THREE.DirectionalLight(0xffffff, 1.4);
+    key.position.set(1, -1.4, 2);
+    scene.add(key);
+    const holder = new THREE.Group();        // spun by the drag
+    scene.add(holder);
+    const plate = new THREE.Group();          // build volume, for scale
+    const part = new THREE.Group();
+    holder.add(plate, part);
+    pv = { renderer, scene, camera, holder, plate, part, yaw: Math.PI / 5, pitch: -Math.PI / 2.6, radius: 1 };
+
+    // Drag to orbit, the same gesture as the main stage. The card only takes
+    // pointer events once pinned, so this is reachable exactly when the card is
+    // meant to be interactive.
+    let drag = null;
+    const cv = renderer.domElement;
+    cv.addEventListener('pointerdown', (e) => {
+      drag = [e.clientX, e.clientY]; cv.setPointerCapture(e.pointerId);
+      cv.style.cursor = 'grabbing'; e.stopPropagation();
+    });
+    cv.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      e.stopPropagation();
+      pv.yaw += (e.clientX - drag[0]) * 0.011;
+      pv.pitch += (e.clientY - drag[1]) * 0.011;
+      pv.pitch = Math.max(-Math.PI + 0.05, Math.min(-0.05, pv.pitch));
+      drag = [e.clientX, e.clientY];
+      drawPreview();
+    });
+    const stop = (e) => { if (drag) { drag = null; cv.style.cursor = 'grab'; e.stopPropagation(); } };
+    cv.addEventListener('pointerup', stop);
+    cv.addEventListener('pointercancel', stop);
+    cv.addEventListener('wheel', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      pv.radius *= e.deltaY > 0 ? 1.08 : 0.93;
+      pv.radius = Math.max(0.35, Math.min(3, pv.radius));
+      drawPreview();
+    }, { passive: false });
+    return pv;
+  }
+
+  function drawPreview() {
+    if (!pv || !pv.frame) return;
+    pv.holder.rotation.set(pv.pitch, 0, pv.yaw);
+    pv.camera.position.set(0, 0, pv.frame * pv.radius);
+    pv.camera.lookAt(0, 0, 0);
+    pv.renderer.render(pv.scene, pv.camera);
+  }
+
+  /**
+   * The part, in the build volume it has to print in.
+   *
+   * Showing the piece alone told you its shape and nothing about whether it is
+   * a thumbnail or fills the machine - and "will this print" is the question
+   * the card exists to answer. Drawing the plate around it makes the scale
+   * self-evident, and the same drag as the main stage lets you look under it.
+   */
+  function renderPartPreview(part) {
+    const v = partPreview();
+    v.part.clear(); v.plate.clear();
+    const src = part.mesh;
+    if (!src?.geometry) return v.renderer.domElement;
+
+    const bed = state.bed;
+    const half = [bed.x / 2, bed.y / 2, bed.z / 2];
+    // Build volume: a wire box on a faint floor, centred on the origin.
+    const box = new THREE.Box3(
+      new THREE.Vector3(-half[0], -half[1], 0), new THREE.Vector3(half[0], half[1], bed.z));
+    const wire = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(bed.x, bed.y, bed.z)),
+      new THREE.LineBasicMaterial({ color: 0x2d7cb5, transparent: true, opacity: 0.22 }));
+    wire.position.set(0, 0, bed.z / 2);
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(bed.x, bed.y),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5 }));
+    floor.position.set(0, 0, -0.2);
+    v.plate.add(floor, wire);
+
+    // The part, sitting on the plate in its chosen print pose.
+    const m = new THREE.Mesh(src.geometry, new THREE.MeshStandardMaterial({
+      color: part.color, roughness: 0.6, metalness: 0.04,
+    }));
+    const pb = new THREE.Box3().setFromBufferAttribute(src.geometry.attributes.position);
+    const c = pb.getCenter(new THREE.Vector3());
+    m.position.set(-c.x, -c.y, -pb.min.z);
+    v.part.add(m);
+
+    // Frame the whole build volume, so every part is drawn at the same scale
+    // and a small one looks small.
+    const r = new THREE.Vector3(bed.x, bed.y, bed.z).length() / 2;
+    v.frame = (r / Math.sin((30 * Math.PI / 180) / 2)) * 0.62;
+    // Centre the box vertically so the plate sits in the middle of the frame.
+    v.holder.position.set(0, 0, -bed.z / 2);
+    drawPreview();
+    return v.renderer.domElement;
+  }
+
+  function showPartCard(id, clientX, clientY) {
+    if (!partCard) return;
+    const part = id && state.parts.find((p) => p.id === id);
+    if (!part) { partCard.classList.remove('on', 'pin'); hoverPart = null; return; }
+    hoverPart = id;
+    const o = part.orientation;
+    const sz = part.summary?.size;
+    const bed = [state.bed.x, state.bed.y, state.bed.z].sort((a, b) => a - b);
+    const fits = sz && sz.slice().sort((a, b) => a - b).every((d, i) => d <= bed[i] + 1e-6);
+    const mySeams = (state.seams || []).filter((sm) => sm.aPartId === part.id || sm.bPartId === part.id);
+    const jointed = mySeams.filter((sm) => sm.placement).length;
+    const rows = [
+      ['Size', sz ? fmtSize(sz) : '-'],
+      ['Volume', part.volume ? `${(part.volume / 1000).toFixed(1)} cm3` : '-'],
+      ['Triangles', part.summary ? String(part.summary.triCount) : '-'],
+      ['Fits plate', fits ? 'yes' : 'NO'],
+    ];
+    if (o) {
+      rows.push(['Best up', o.up.map((v) => (Math.abs(v) < 1e-6 ? 0 : +v.toFixed(2))).join(', ')]);
+      rows.push(['Support', o.needsSupport ? `${o.unsupportedMm2.toFixed(0)} mm2` : 'none']);
+    }
+    rows.push(['Seams', mySeams.length ? `${jointed} of ${mySeams.length} jointed` : 'none']);
+
+    partCard.innerHTML = '';
+    partCard.append(
+      el('div', { class: 'pc-h' },
+        el('span', { class: 'sw', style: `background:#${part.color.toString(16).padStart(6, '0')}` }),
+        el('span', { class: 'nm' }, part.name),
+        el('span', { class: 'pin-b' }, pinnedPart === id ? 'pinned · esc' : '')),
+      ...rows.map(([k, v]) => el('div', { class: 'pc-r' }, el('span', {}, k), el('span', {}, v))),
+    );
+    const shot = renderPartPreview(part);
+    if (shot) partCard.append(el('div', { class: 'pc-plate' }, shot));
+    if (mySeams.length) {
+      const sec = el('div', { class: 'pc-sec' });
+      for (const sm of mySeams.slice(0, 6)) {
+        const other = state.parts.find((q) => q.id === (sm.aPartId === part.id ? sm.bPartId : sm.aPartId));
+        sec.append(el('div', { class: 'pc-r' },
+          el('span', {}, other?.name ?? 'seam'),
+          el('span', {}, sm.placement
+            ? (sm.placement.profiled ? `${sm.placement.grip.toFixed(1)} mm grip` : `${sm.placement.S} mm snap`)
+            : 'glue')));
+      }
+      partCard.append(sec);
+    }
+    if (pinnedPart === id) {
+      // Never let a card section take the whole card down with it: the pin
+      // state is applied below, and a throw here used to skip it, leaving a
+      // card that says "pinned" and is not.
+      try {
+        const orow = orientationRows(part);
+        if (orow) partCard.append(orow);
+      } catch (e) { console.error('orientation rows', e); }
+    }
+    partCard.classList.add('on');
+    partCard.classList.toggle('pin', pinnedPart === id);
+    if (clientX != null) movePartCard(clientX, clientY);
   }
 
   function refreshParts() {
@@ -942,16 +1666,157 @@ export async function boot({ workerSources, baseUrl }) {
     refreshJoints();
   }
 
-  function refreshJoints() {
-    jointsCard.innerHTML = '';
-    jointsCard.append(el('div', { class: 'card-t' }, 'Joints ', el('span', { class: 'n' }, state.joints.length || '')));
-    if (!state.joints.length) {
-      jointsCard.append(el('div', { class: 'empty' }, 'Joints appear after a split.'));
-      return;
+  /**
+   * How good is this split, in the two terms that actually matter?
+   *
+   * STRENGTH is about where the seams landed. A seam is only as good as the
+   * joint it can hold, and a joint is only as good as the face it is cut in -
+   * so the honest measure is how much of the total seam area is jointed rather
+   * than glued, and how much grip those joints have. A split that cuts a model
+   * into printable pieces through its thinnest, most awkward sections is a
+   * worse split than one that takes the same pieces through fat material, even
+   * though both "work".
+   *
+   * SIMPLICITY is about what you then have to print. Fewer distinct shapes
+   * beats fewer parts - eight copies of one bracket is a simpler print job
+   * than five different ones - and parts should be as big as the bed allows,
+   * because every extra part is another seam to glue and another chance to
+   * mis-assemble. Plate use says whether the pieces are near that ceiling or
+   * timidly small.
+   */
+  function splitQuality() {
+    const parts = state.parts, seams = state.seams || [];
+    if (!parts.length) return null;
+    const bed = state.bed;
+    const bedVol = bed.x * bed.y * bed.z;
+
+    // --- simplicity
+    const sig = (p) => {
+      const d = p.summary.size.slice().sort((a, b) => a - b).map((v) => v.toFixed(1));
+      return `${(p.volume / 100).toFixed(0)}|${d.join('x')}`;
+    };
+    const shapes = new Map();
+    for (const p of parts) shapes.set(sig(p), (shapes.get(sig(p)) || 0) + 1);
+    const distinct = shapes.size;
+    const biggest = Math.max(...parts.map((p) => p.summary.size[0] * p.summary.size[1] * p.summary.size[2]));
+    const plateUse = Math.min(1, biggest / bedVol);
+    const reuse = 1 - (distinct - 1) / Math.max(1, parts.length - 1);   // 1 = all identical
+
+    // --- strength
+    const faceArea = (sm) => {
+      const a = sm.a?.bbox, b = sm.b?.bbox, n = sm.plane.n;
+      if (!a) return 0;
+      let area = 1;
+      for (let k = 0; k < 3; k++) {
+        if (Math.abs(n[k]) > 0.5) continue;
+        const lo = Math.max(a.min[k], b.min[k]), hi = Math.min(a.max[k], b.max[k]);
+        area *= Math.max(0, hi - lo);
+      }
+      return area;
+    };
+    // A stamped snap and a profiled tab are not measured in the same units - one
+    // is a joint SIZE on a face big enough to host it, the other is millimetres
+    // of undercut. Averaging them gave "mean grip 25.0 mm" for a 25 mm boss,
+    // which reads as a joint six times stronger than any tab can be. Score each
+    // on its own terms: a stamped joint only exists at all when the face can
+    // carry it, so it is full marks; a tab is graded on its undercut, where
+    // 3 mm is one you can feel.
+    let total = 0, jointedArea = 0, qualSum = 0, gripSum = 0, gripArea = 0;
+    for (const sm of seams) {
+      const A = faceArea(sm);
+      total += A;
+      if (!sm.placement) continue;
+      jointedArea += A;
+      if (sm.placement.profiled) {
+        qualSum += Math.min(1, sm.placement.grip / 3) * A;
+        gripSum += sm.placement.grip * A; gripArea += A;
+      } else {
+        qualSum += A;
+      }
     }
+    const jointedFrac = total ? jointedArea / total : 0;
+    const meanGrip = gripArea ? gripSum / gripArea : null;
+    const strength = total ? qualSum / total : 0;
+
+    return {
+      parts: parts.length, distinct, reuse, plateUse, jointedFrac, meanGrip,
+      seams: seams.length, jointed: seams.filter((sm) => sm.placement).length,
+      strengthPct: Math.round(strength * 100),
+      simplicityPct: Math.round((0.6 * reuse + 0.4 * plateUse) * 100),
+    };
+  }
+
+  /**
+   * The alternative splits, when the search found more than one that works.
+   *
+   * Presenting a single plan implies it is THE answer; it is one point on a
+   * trade-off. Simplest gives the fewest, most repeated, biggest pieces.
+   * Strongest puts the seams where joints can actually hold. Balanced is the
+   * best compromise, and is what runs by default.
+   */
+  function refreshPlanOptions() {
+    if (!planOptCard) return;
+    planOptCard.innerHTML = '';
+    const opts = state.planOptions;
+    if (!opts) return;
+    planOptCard.append(el('div', { class: 'card-t', style: 'margin-top:2px' }, 'Alternative splits'));
+    for (const o of opts) {
+      const active = state.planChoice ? state.planChoice === o.label : o.label === (state.plan?.chosen || 'balanced');
+      const row = el('div', { class: 'pc-r', style: 'cursor:pointer;padding:3px 0' + (active ? ';color:#2d7cb5' : '') },
+        el('span', { style: active ? 'color:#2d7cb5;font-weight:700' : '' }, (active ? '\u25cf ' : '') + o.label),
+        el('span', {}, `${o.pieces} parts \u00b7 ${o.distinct} shapes \u00b7 S${o.strength} \u00b7 P${o.simplicity}`));
+      row.addEventListener('click', async () => {
+        if (active) return;
+        state.planChoice = o.label;
+        try {
+          setProgress(0.35);
+          await executePlan({ ...state.plan, planes: o.planes });
+          say(`Switched to the ${o.label} split: ${state.parts.length} parts.`);
+          setProgress(1);
+        } catch (e) { setProgress(0); say(e.message, true, 7000); }
+      });
+      planOptCard.append(row);
+    }
+  }
+
+  function refreshQuality() {
+    if (!qualityCard) return;
+    qualityCard.innerHTML = '';
+    const q = splitQuality();
+    if (!q) return;
+    const bar = (label, pct, hint) => el('div', { style: 'margin-top:6px' },
+      el('div', { class: 'pc-r' }, el('span', {}, label), el('span', {}, `${pct}%`)),
+      el('div', { style: 'height:4px;border-radius:3px;background:rgba(0,0,0,.08);overflow:hidden;margin-top:2px' },
+        el('div', { style: `height:100%;width:${pct}%;background:${pct >= 66 ? '#4d9e5f' : pct >= 33 ? '#c9a227' : '#c0392b'}` })),
+      el('div', { class: 'note', style: 'margin-top:3px' }, hint));
+    qualityCard.append(
+      el('div', { class: 'card-t', style: 'margin-top:2px' }, 'Split quality'),
+      bar('Strength', q.strengthPct,
+        `${q.jointed} of ${q.seams} seams jointed, ${Math.round(q.jointedFrac * 100)}% of seam area`
+        + (q.meanGrip != null ? `, mean undercut ${q.meanGrip.toFixed(2)} mm.` : '.')),
+      bar('Simplicity', q.simplicityPct,
+        `${q.parts} parts of ${q.distinct} distinct shape${q.distinct === 1 ? '' : 's'}; largest fills ${Math.round(q.plateUse * 100)}% of the build volume.`));
+  }
+
+  function refreshJoints() {
+    if (!jointsCard) return;
+    jointsCard.innerHTML = '';
+    const seamCount = (state.seams || []).length;
+    if (!state.joints.length && !seamCount) return;
+    jointsCard.append(el('div', { class: 'card-t', style: 'margin-top:2px' }, 'Seams ',
+      el('span', { class: 'n' }, `${state.joints.length}/${seamCount}`)));
     for (const j of state.joints) {
       const a = state.parts.find((p) => p.id === j.aPartId), b = state.parts.find((p) => p.id === j.bPartId);
       const male = j.maleOn === 'A' ? a : b;
+      // A profiled joint is the cut, so there is no stamped solid to swap sides
+      // and no containment to audit. What matters about it is the grip.
+      if (j.kind === 'profiled') {
+        jointsCard.append(el('div', { class: 'row', style: 'min-height:22px' },
+          el('span', { class: 'lbl w' }, `${j.type} ${j.grip.toFixed(1)} mm`),
+          el('span', { style: 'flex:1;font-size:10px;color:rgba(0,0,0,.5)' },
+            `${a?.name ?? '?'} ↔ ${b?.name ?? '?'} · cut joint in ${j.width.toFixed(1)} mm stock`)));
+        continue;
+      }
       const ok = j.audit?.ok;
       jointsCard.append(el('div', { class: 'row', style: 'min-height:22px' },
         el('span', { class: 'lbl w' }, `${j.S} mm ×${j.sites.length}`),
@@ -960,6 +1825,19 @@ export async function boot({ workerSources, baseUrl }) {
         ok === false ? el('span', { class: 'warn', title: 'containment audit failed' }, '▲') : null,
         button('Swap', () => swapJoint(j), 'g sm')));
     }
+    // Seams that took no joint are still seams. Listing them - with the reason
+    // the placement gave up - is the difference between "the tool found two
+    // joints" and "the tool found four seams and could only joint two of them,
+    // here is why".
+    for (const s of (state.seams || [])) {
+      if (s.placement) continue;
+      const a = state.parts.find((p) => p.id === s.aPartId), b = state.parts.find((p) => p.id === s.bPartId);
+      jointsCard.append(el('div', { class: 'row', style: 'min-height:22px;align-items:flex-start' },
+        el('span', { class: 'lbl w', style: 'color:rgba(0,0,0,.35)' }, 'plain'),
+        el('span', { style: 'flex:1;font-size:10px;color:rgba(0,0,0,.5)' },
+          `${a?.name ?? '?'} ↔ ${b?.name ?? '?'} · glue seam`,
+          s.why ? el('div', { style: 'font-size:9px;color:rgba(0,0,0,.32);margin-top:2px;line-height:1.4' }, s.why) : null)));
+    }
     jointsCard.append(el('div', { class: 'note' },
       'Ghost view shows every joint inside its part - amber male, violet female. Swap re-runs the split with the halves exchanged.'));
   }
@@ -967,7 +1845,9 @@ export async function boot({ workerSources, baseUrl }) {
   async function swapJoint(j) {
     if (!state.plan) return;
     state.plan.swaps = state.plan.swaps || {};
-    state.plan.swaps[j.planeIdx] = !state.plan.swaps[j.planeIdx];
+    // Keyed by seam, not by plane: one plane can carry several independent
+    // seams and swapping one of them must not flip the others.
+    state.plan.swaps[j.seamKey] = !state.plan.swaps[j.seamKey];
     say('Re-cutting with the joint swapped…');
     await reexecute();
   }
@@ -988,82 +1868,55 @@ export async function boot({ workerSources, baseUrl }) {
   }
 
   function selectPart(id) {
+    pinnedPart = pinnedPart === id ? null : id;
+    showPartCard(pinnedPart || id);
     state.selected = state.selected === id ? null : id;
     refreshParts();
     refreshSelected();
   }
 
+  /**
+   * The pinned part's card is where "selected part" lives now. Keeping the old
+   * name means every caller that used to poke the right panel still works.
+   */
   function refreshSelected() {
-    selectedCard.innerHTML = '';
-    selectedCard.append(el('div', { class: 'card-t' }, 'Selected part'));
-    const part = state.parts.find((p) => p.id === state.selected);
-    if (!part) {
-      selectedCard.append(el('div', { class: 'empty' }, 'Click a part to inspect it.'));
-      return;
-    }
-    const o = part.orientation;
-    selectedCard.append(
-      el('div', { class: 'stats' },
-        stat('Size', fmtSize(part.summary.size), 'mm'),
-        stat('Tris', part.summary.triCount.toLocaleString())),
-      el('hr'));
-
-    // Orientation candidates: the print poses, best first.
-    selectedCard.append(el('div', { class: 'card-t' }, 'Print orientation'));
-    if (!part.orientCands.length) {
-      selectedCard.append(el('div', { class: 'empty' }, 'No ranked orientations.'));
-    } else {
-      for (const [i, cand] of part.orientCands.entries()) {
-        const chosen = o === cand;
-        const b = el('div', { class: 'row', style: 'cursor:pointer;min-height:24px' + (chosen ? ';color:#2d7cb5' : '') },
-          el('span', { class: 'lbl w', style: chosen ? 'color:#2d7cb5;font-weight:700' : '' }, chosen ? '● ' + ordinal(i) : ordinal(i)),
-          el('span', { style: 'flex:1;font-size:10px' },
-            `${cand.unsupportedMm2 <= 4 ? 'no supports' : `${Math.round(cand.unsupportedMm2)} mm² unsupported`} · h ${cand.height} mm`),
-          cand.needsSupport ? el('span', { class: 'warn' }, '▲') : null);
-        b.addEventListener('click', () => {
-          part.orientation = cand;
-          state.plates = [];        // the arrangement is stale now
-          refreshSelected(); refreshParts(); refreshExport();
-        });
-        selectedCard.append(b);
-      }
-      selectedCard.append(el('div', { class: 'note' },
-        'Ranked for dimensional accuracy, layer strength across the joints, and printing every joint face without support.'));
-    }
-
-    // Per-part overrides.
-    selectedCard.append(el('hr'), el('div', { class: 'card-t' }, 'Overrides',
-      el('span', { class: 'n' }, part.proc ? 'custom' : 'inherits global')));
-    const eff = effectiveProc(part);
-    const mark = () => { part.proc = part.proc || {}; };
-    const layerSel = select(QUALITIES.map((q) => ({ value: String(q.h), label: `${q.h.toFixed(2)} mm` })),
-      String(eff.layerHeight), (v) => { mark(); part.proc.layerHeight = Number(v); refreshSelected(); });
-    const walls = num(eff.wallLoops, { min: 1, max: 8, onchange: (v) => { mark(); part.proc.wallLoops = v; } });
-    const infill = num(eff.infillPct, { min: 0, max: 100, unit: '%', onchange: (v) => { mark(); part.proc.infillPct = v; } });
-    const patSel = select(INFILL_PATTERNS.map((p) => ({ value: p, label: p })), eff.infillPattern,
-      (v) => { mark(); part.proc.infillPattern = v; });
-    selectedCard.append(
-      row('Layer', layerSel),
-      row('Walls', ...walls.nodes),
-      row('Infill', ...infill.nodes),
-      row('Pattern', patSel),
-      checkbox('Supports for this part', eff.supports, (v) => { mark(); part.proc.supports = v; }),
-      el('div', { class: 'btnrow', style: 'margin-top:6px' },
-        button('Reset to global', () => { part.proc = null; refreshSelected(); }, 'g sm')),
-      el('div', { class: 'note' }, 'Overrides ride into the 3MF as per-object settings, so the slicer applies them to this part only. Parts with different layer heights or materials get separate plates.'),
-    );
+    const id = pinnedPart || state.selected;
+    if (id && state.parts.some((p) => p.id === id)) showPartCard(id);
+    else if (partCard) partCard.classList.remove('on', 'pin');
   }
+
   const ordinal = (i) => ['Best', '2nd', '3rd', '4th', '5th'][i] || `${i + 1}th`;
 
+  /** Print-pose chooser, appended to the part card when it is pinned. */
+  function orientationRows(part) {
+    if (!part.orientCands?.length) return null;
+    const box = el('div', { class: 'pc-sec' },
+      el('div', { class: 'card-t', style: 'margin-bottom:5px' }, 'Print orientation'));
+    for (const [i, cand] of part.orientCands.entries()) {
+      const chosen = part.orientation === cand;
+      const r = el('div', { class: 'pc-r', style: 'cursor:pointer' + (chosen ? ';color:#2d7cb5' : '') },
+        el('span', { style: chosen ? 'color:#2d7cb5;font-weight:700' : '' }, (chosen ? '\u25cf ' : '') + ordinal(i)),
+        el('span', {}, `${cand.unsupportedMm2 <= 4 ? 'no supports' : `${Math.round(cand.unsupportedMm2)} mm\u00b2`} \u00b7 h ${cand.height}`));
+      r.addEventListener('click', (e) => {
+        e.stopPropagation();
+        part.orientation = cand;
+        state.plates = [];               // the arrangement is stale now
+        showPartCard(part.id); refreshParts(); refreshExport();
+      });
+      box.append(r);
+    }
+    return box;
+  }
   function refreshExport() {
-    exportCard.innerHTML = '';
-    exportCard.append(el('div', { class: 'card-t' }, 'Export'));
+    if (!exportBody) return;
+    exportBody.innerHTML = '';
+    if (exportBtn) exportBtn.disabled = !state.parts.length;
     if (!state.plates.length) {
-      exportCard.append(el('div', { class: 'empty' }, 'Arrange first, then export.'));
+      exportBody.append(el('div', { class: 'empty' }, 'Arrange first, then export.'));
       return;
     }
     const sel = { plate3mf: true, plateStl: false, partStls: false, zip: state.plates.length > 1 };
-    exportCard.append(
+    exportBody.append(
       checkbox(`Plate project${state.plates.length > 1 ? 's' : ''} (.3mf) — opens in ElegooSlicer with settings applied`, sel.plate3mf, (v) => sel.plate3mf = v),
       checkbox('Merged plate STLs', sel.plateStl, (v) => sel.plateStl = v),
       checkbox('Individual part STLs', sel.partStls, (v) => sel.partStls = v),
@@ -1147,6 +2000,25 @@ export async function boot({ workerSources, baseUrl }) {
   // A click is a click only if the pointer barely moved - otherwise it was an
   // orbit drag and placing a cut mid-orbit would drive anyone mad.
   let downAt = null;
+  function pickPart(e) {
+    if (!state.parts.length) return null;
+    const rect = stage.renderer.domElement.getBoundingClientRect();
+    pointer.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+    raycaster.setFromCamera(pointer, stage.camera);
+    const meshes = state.parts.map((p) => p.mesh).filter((m) => m.visible);
+    const hits = raycaster.intersectObjects(meshes, false);
+    if (!hits.length) return null;
+    return state.parts.find((p) => p.mesh === hits[0].object)?.id ?? null;
+  }
+
+  stage.renderer.domElement.addEventListener('pointermove', (e) => {
+    if (pinnedPart) return;
+    const hit = pickPart(e);
+    if (hit !== hoverPart) showPartCard(hit, e.clientX, e.clientY);
+    else if (hit) movePartCard(e.clientX, e.clientY);
+  });
+  stage.renderer.domElement.addEventListener('pointerleave', () => { if (!pinnedPart) showPartCard(null); });
+
   stage.renderer.domElement.addEventListener('pointerdown', (e) => {
     if (e.button === 0) downAt = [e.clientX, e.clientY];
   });
@@ -1258,5 +2130,6 @@ export async function boot({ workerSources, baseUrl }) {
 
   // A named handle for tests and for poking at the tool from the console. It
   // lives behind the gate, so it exposes nothing the page does not already hold.
-  window.__pp = { state, geom, csg, stage, autoSplit, arrange, addManualPlane };
+  window.__pp = { state, geom, csg, stage, autoSplit, symmetricSplit, arrange, addManualPlane, importSTL, setView, openExport, makeSymmetric,
+    get pinned() { return pinnedPart; }, showPartCard, splitQuality };
 }
