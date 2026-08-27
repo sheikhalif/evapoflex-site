@@ -224,9 +224,20 @@ export async function boot({ workerSources, baseUrl }) {
    * whose centre lies in the material both components share along the seam.
    */
   const tabForSeam = (seam, prof) => {
-    const u = prof.uAxis;
-    const lo = Math.max(seam.a.bbox.min[u], seam.b.bbox.min[u]);
-    const hi = Math.min(seam.a.bbox.max[u], seam.b.bbox.max[u]);
+    // Project each box onto the seam's own along-axis. That axis is only a
+    // world axis for a grid cut; on a radial seam it points any which way, so
+    // the interval has to come from the box's support along u rather than from
+    // one of its coordinates.
+    const onU = (bb) => {
+      let c = 0, r = 0;
+      for (let k = 0; k < 3; k++) {
+        c += prof.u[k] * (bb.min[k] + bb.max[k]) / 2;
+        r += Math.abs(prof.u[k]) * (bb.max[k] - bb.min[k]) / 2;
+      }
+      return [c - r, c + r];
+    };
+    const [aLo, aHi] = onU(seam.a.bbox), [bLo, bHi] = onU(seam.b.bbox);
+    const lo = Math.max(aLo, bLo), hi = Math.min(aHi, bHi);
     return prof.tabs.find((t) => t.at >= lo - 0.5 && t.at <= hi + 0.5) || null;
   };
 
@@ -264,7 +275,7 @@ export async function boot({ workerSources, baseUrl }) {
       // The tab side overshoots the plane by the tab's own length; the seam
       // finder has to know by how much or it will not see that side touching.
       reach: Math.max(0, ...r.tabs.map((t) => (t.plain ? 0 : t.params.tabL))),
-      uAxis: [0, 1, 2].findIndex((k) => Math.abs(pl.n[k]) > 0.999) === 0 ? 1 : 0,
+      u: sec.u,
     });
     return r;
   }

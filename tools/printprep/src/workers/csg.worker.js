@@ -138,10 +138,10 @@ serve({
    * one place that measurement can honestly come from.
    */
   async 'csg.seamSection'({ solidId, plane }) {
-    const k = seamAxis(plane);
+    const fr = seamFrame(plane);
     arena.beginScope();
     try {
-      return seamSection(arena.M(solidId), k, plane.d * Math.sign(plane.n[k]));
+      return seamSection(arena.M(solidId), fr);
     } finally { arena.endScope(); }
   },
 
@@ -171,20 +171,17 @@ serve({
    * The tab lives on the other one, so `maleOn` in the result says which.
    */
   async 'csg.splitProfiled'({ solidId, plane, stock, opts }) {
-    const k = seamAxis(plane);
+    const fr = seamFrame(plane);
     arena.beginScope();
     try {
       const m = arena.M(solidId);
       const bb = m.boundingBox();
       const T = bb.max[2] - bb.min[2];
-      const sgn = Math.sign(plane.n[k]);
-      const d = plane.d * sgn;
-      const uAxis = k === 0 ? 1 : 0;
-      const uMid = (bb.min[uAxis] + bb.max[uAxis]) / 2;
+      const uMid = (bb.min[0] + bb.max[0]) / 2 * fr.u[0] + (bb.min[1] + bb.max[1]) / 2 * fr.u[1];
       const span = 4 * Math.max(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]);
       const { Manifold } = ctx();
 
-      const { lumps } = seamSection(m, k, d);
+      const { lumps } = seamSection(m, fr);
       if (!lumps.length) throw new Error('the seam plane does not cross the solid');
 
       // "A sheet lying in XY" is asserted in the contract but only the seam
@@ -211,13 +208,7 @@ serve({
       // cut silently no-opped while the identical Y-aligned seam cut correctly
       // - and on a grid-cut sheet that is half of all seams.
       const cs = (pts, at, grow) => {
-        const ring = pts.map(([x, y]) => {
-          const w = [0, 0];
-          w[k] = d + y;
-          w[uAxis] = at + x;
-          return w;
-        });
-        if (k === 0) ring.reverse();
+        const ring = pts.map(([x, y]) => seamPoint(fr, at, x, y));
         let c = new (ctx().CrossSection)([ring], 'Positive');
         if (grow) { const g = c.offset(grow, 'Miter', 2, 0); c.delete(); c = g; }
         return c;
@@ -343,10 +334,21 @@ serve({
         target.delete(); piece.delete();
         return merged;
       };
+      // Root each tab a hair INSIDE the backing rather than flush against it.
+      //
+      // tabPolygon starts on the seam line, exactly where the backing halfspace
+      // ends, so the union of the two is a tangency rather than an overlap and
+      // whether it welds is down to the angle's floating-point luck. Measured on
+      // four rails at 30 degrees: three of the four tabs came out as separate
+      // lumps of exactly the tab's own volume - detached from the rails they
+      // belong to, which is both debris and a joint that holds nothing. Grid
+      // cuts happened to survive it, which is why it only surfaced once seams
+      // could point anywhere.
+      const root = (poly) => poly.map(([x, y]) => [x, y <= 1e-9 ? -0.01 : y]);
       for (const t of tabs) {
         if (t.plain) continue;
-        aSide = add(aSide, tabPolygon(t.params), t.at, 0);
-        bSide = add(bSide, tabPolygon(t.params), t.at, t.params.clearance);
+        aSide = add(aSide, root(tabPolygon(t.params)), t.at, 0);
+        bSide = add(bSide, root(tabPolygon(t.params)), t.at, t.params.clearance);
         const bossPoly = bossPolygon(t.params);
         if (!bossPoly) continue;
         const bcs = cs(bossPoly, t.at, 0);
@@ -371,7 +373,7 @@ serve({
       // refuse if it is not. Cheap next to the booleans, and it is the only
       // check that sees geometry the tab list cannot describe.
       if (pad) {
-        const after = seamSection(stockSolid, k, d).lumps.length;
+        const after = seamSection(stockSolid, fr).lumps.length;
         if (after !== lumps.length) {
           aSide.delete(); bSide.delete(); pad.delete(); stockSolid.delete();
           throw new Error(`padding the seam merged ${lumps.length} lumps into ${after} - `
@@ -395,18 +397,17 @@ serve({
         lo.delete(); hi.delete();
         return { aId: null, bId: null, why: 'the profiled cut missed the solid' };
       }
-      // `lo` is the low side along axis k. csg.splitOne calls the n.x >= d side
-      // `aId`, and the planner only ever emits +1 axis normals, so for every
-      // real plane those are opposite. Label by the shared convention rather
-      // than leaving the caller to discover the inversion by way of a seam
-      // graph that silently comes back empty.
-      const [A, B] = sgn > 0 ? [hi, lo] : [lo, hi];
+      // `hi` is the n.x >= d side, which is what csg.splitOne calls `aId`. The
+      // frame now carries the normal's own direction rather than folding its
+      // sign into an axis index, so this needs no case analysis: the tab always
+      // rides on the other half.
+      const [A, B] = [hi, lo];
       const aId = arena.retain(arena.track(A));
       const bId = arena.retain(arena.track(B));
       arena.release(solidId);
       return {
         aId, bId,
-        maleOn: sgn > 0 ? 'B' : 'A',
+        maleOn: 'B',
         tabs: tabs.map((t) => ({ at: t.at, width: t.width, plain: t.plain, why: t.why, params: t.params })),
         jointed: tabs.filter((t) => !t.plain).length,
         params: tabs.find((t) => !t.plain)?.params ?? null,
@@ -533,13 +534,52 @@ serve({
   async 'csg.stats'() { return arena.stats(); },
 });
 
-/** The world axis a seam runs perpendicular to, or a refusal. */
-function seamAxis(plane) {
-  const k = [0, 1, 2].findIndex((i) => Math.abs(plane.n[i]) > 0.999);
-  if (k !== 0 && k !== 1) {
-    throw new Error('profiled cuts need an X or Y aligned seam through a sheet lying in XY');
+/**
+ * The seam's own frame: n across the cut, u along it, z through the sheet.
+ *
+ * The requirement is that the sheet lies in XY and the cut goes straight down
+ * through it - which means the seam normal is HORIZONTAL. It does not mean the
+ * normal is an axis. Insisting on X or Y was a convenience of indexing, and it
+ * ruled out every radial cut, which is exactly what a wheel wants: sixteen
+ * spokes can only be cut alike by sixteen planes at sixteen angles.
+ *
+ * u = n x z, which makes (u, n, z) right-handed for every n. That is worth
+ * saying because the axis-indexed version was NOT: for an X-normal seam it
+ * built a left-handed frame, silently mirrored every polygon, and the fix was a
+ * special case that reversed the ring. Choosing the basis properly removes both
+ * the mirror and the special case.
+ */
+function seamFrame(plane) {
+  const L = Math.hypot(plane.n[0], plane.n[1], plane.n[2]) || 1;
+  const n = [plane.n[0] / L, plane.n[1] / L, plane.n[2] / L];
+  if (Math.abs(n[2]) > 1e-3) {
+    throw new Error('profiled cuts need a seam that runs straight down through a sheet lying in XY');
   }
-  return k;
+  // Scaling the normal to unit length scales the offset with it, or the plane
+  // moves.
+  return { n, u: [n[1], -n[0], 0], d: plane.d / L };
+}
+
+const unit3 = (v) => {
+  const L = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / L, v[1] / L, v[2] / L];
+};
+
+/** Seam-local (x across the rail from `at`, y along the normal) -> world XY. */
+const seamPoint = ({ n, u, d }, at, x, y) => [
+  n[0] * (d + y) + u[0] * (at + x),
+  n[1] * (d + y) + u[1] * (at + x),
+];
+
+/** How far along u a set of world points reaches. */
+function uRange(fr, verts) {
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < verts.length; i += 3) {
+    const t = verts[i] * fr.u[0] + verts[i + 1] * fr.u[1];
+    if (t < lo) lo = t;
+    if (t > hi) hi = t;
+  }
+  return [lo, hi];
 }
 
 /**
@@ -562,17 +602,15 @@ function seamAxis(plane) {
  * material that is 100 mm wide. The EEDX wheel sits at x = 3193..4160 against
  * a span of 3869, so 291 mm of its rim would have gone unseen.
  */
-function seamSection(m, k, d) {
+function seamSection(m, fr) {
   const { Manifold, CrossSection } = ctx();
   const bb = m.boundingBox();
-  const uAxis = k === 0 ? 1 : 0;
   const T = bb.max[2] - bb.min[2];
-  const uMid = (bb.min[uAxis] + bb.max[uAxis]) / 2;
+  const uMid = (bb.min[0] + bb.max[0]) / 2 * fr.u[0] + (bb.min[1] + bb.max[1]) / 2 * fr.u[1];
   const span = 4 * Math.max(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]);
   const probe = 0.5;
   const ring = [[-span, -probe / 2], [span, -probe / 2], [span, probe / 2], [-span, probe / 2]]
-    .map(([x, y]) => { const w = [0, 0]; w[k] = d + y; w[uAxis] = uMid + x; return w; });
-  if (k === 0) ring.reverse();
+    .map(([x, y]) => seamPoint(fr, uMid, x, y));
   const rect = new CrossSection([ring], 'Positive');
   // extrude() and translate() each allocate; only the translated one is kept,
   // so the intermediate has to be released by hand or it leaks for the session.
@@ -584,21 +622,25 @@ function seamSection(m, k, d) {
   slab.delete();
   const lumps = [];
   for (const c of sec.decompose()) {
-    const b = c.boundingBox();
-    // An empty component reports an inverted infinite box rather than throwing.
-    if (!c.isEmpty() && Number.isFinite(b.min[uAxis]) && b.max[uAxis] > b.min[uAxis]) {
-      lumps.push({
-        at: (b.min[uAxis] + b.max[uAxis]) / 2,
-        width: b.max[uAxis] - b.min[uAxis],
-        uLo: b.min[uAxis], uHi: b.max[uAxis],
-        zLo: b.min[2], zHi: b.max[2],
-      });
+    if (!c.isEmpty()) {
+      // Project the real vertices, not the bounding box. An AABB is exact only
+      // when u is a world axis; on a radial seam it reports a rail wider than
+      // it is, and a tab sized from that overhangs the material it sits in.
+      const mesh = c.getMesh();
+      const [lo, hi] = uRange(fr, mesh.vertProperties);
+      const b = c.boundingBox();
+      if (Number.isFinite(lo) && hi > lo) {
+        lumps.push({
+          at: (lo + hi) / 2, width: hi - lo, uLo: lo, uHi: hi,
+          zLo: b.min[2], zHi: b.max[2],
+        });
+      }
     }
     c.delete();
   }
   sec.delete();
   lumps.sort((p, q) => p.at - q.at);
-  return { k, uAxis, thickness: T, lumps };
+  return { u: fr.u, n: fr.n, thickness: T, lumps };
 }
 
 /** -1 fully below, +1 fully above, 0 crossed. */
