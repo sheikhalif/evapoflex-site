@@ -554,6 +554,76 @@ serve({
     } finally { arena.endScope(); }
   },
 
+  /**
+   * Force a model onto its own symmetry.
+   *
+   * Measured on the EEDX wheel at its exact volume centroid, the area around
+   * the axis repeats to within 4.61% at a half turn, 5.18% at a quarter and
+   * 6.81% at an eighth - and the error GROWS with the order, which is what
+   * happens when the arms are not at perfectly regular angles rather than when
+   * one of them is wrong. A model that is nearly symmetric cannot be split into
+   * identical parts no matter how good the planner is, because the parts are
+   * not identical in the source.
+   *
+   * So take one sector and use it eight times. The result is exactly N-fold by
+   * construction. This CHANGES THE MODEL - it is a repair, not a view - so the
+   * caller has to ask for it, and the returned volume delta says how much moved.
+   */
+  async 'csg.symmetrize'({ solidId, order, centre }) {
+    const N = Math.round(order);
+    if (!(N >= 4)) throw new Error('symmetrising needs an order of 4 or more - a sector has to be a wedge');
+    const { Manifold } = ctx();
+    arena.beginScope();
+    try {
+      const src = arena.M(solidId);
+      const before = src.volume();
+      const [cx, cy] = centre;
+      const at = forceEval(src.translate([-cx, -cy, 0]));       // axis to the origin
+      const th = (2 * Math.PI) / N;
+
+      // One wedge: y >= 0 intersected with "angle <= th". Both are halfspaces
+      // through the axis, which is why this needs th <= 90 degrees, i.e. N >= 4.
+      // Cut the wedge WIDER than a sector, so neighbouring copies overlap.
+      //
+      // A wedge of exactly 2*pi/N abuts its neighbour on a shared plane, and
+      // unioning solids across an exactly coincident face is where booleans go
+      // wrong: the first attempt came back with 57 non-manifold edges and a
+      // flipped one, closed:false, and would not split at all. An overlap of a
+      // couple of degrees costs nothing and is still exactly N-fold - rotating
+      // the set of copies by one sector permutes them, whatever their width.
+      const over = Math.min(th / 4, 3 * Math.PI / 180);
+      const cutA = at.splitByPlane([Math.sin(over), Math.cos(over), 0], 0)[0];
+      const wedge = forceEval(cutA.splitByPlane([Math.sin(th), -Math.cos(th), 0], 0)[0]);
+      cutA.delete();
+      at.delete();
+      if (wedge.isEmpty()) { wedge.delete(); throw new Error('the sector came out empty - is the centre right?'); }
+
+      const copies = [];
+      for (let k = 0; k < N; k++) {
+        copies.push(k === 0 ? wedge : wedge.rotate([0, 0, (k * 360) / N]));
+      }
+      let acc = copies[0];
+      for (let k = 1; k < copies.length; k++) {
+        const u = forceEval(acc.add(copies[k]));
+        if (acc !== wedge) acc.delete();
+        copies[k].delete();
+        acc = u;
+      }
+      const out = forceEval(acc.translate([cx, cy, 0]));
+      if (acc !== wedge) acc.delete();
+      wedge.delete();
+
+      const id = arena.retain(arena.track(out));
+      return {
+        solidId: id, order: N,
+        volumeBefore: before, volumeAfter: out.volume(),
+        movedMm3: Math.abs(out.volume() - before),
+        movedPct: before ? Math.abs(out.volume() - before) / before * 100 : 0,
+        bbox: out.boundingBox(),
+      };
+    } finally { arena.endScope(); }
+  },
+
   /** Resolve seam-joint dimensions for some stock, without building anything. */
   async 'csg.seamParams'({ type, stock, opts }) {
     return seamParams(type, stock, opts || {});

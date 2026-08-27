@@ -249,9 +249,22 @@ serve({
     const BINS = 1440;                       // a quarter-degree; divides by 16
     const hist = new Float64Array(BINS);
 
-    // Area-weighted centroid in XY. On anything with a symmetry axis this IS
-    // the axis, and taking it from the bounding box instead would put it off
-    // centre the moment the model is not framed symmetrically.
+    // The axis is the VOLUME centroid, not the area-weighted one.
+    //
+    // Weighting by triangle area weights by where the mesh happens to be finely
+    // tessellated. On the EEDX wheel that put the axis 0.56 mm off, which on
+    // 6 mm rails is a tenth of their width - enough to make a symmetric model
+    // read as asymmetric. The signed-tetrahedron sum is the exact centroid of
+    // the enclosed solid and costs the same pass.
+    let vol = 0, vcx = 0, vcy = 0;
+    for (let i = 0; i < soup.length; i += 9) {
+      const ax = soup[i], ay = soup[i+1], az = soup[i+2];
+      const bx = soup[i+3], by = soup[i+4], bz = soup[i+5];
+      const gx = soup[i+6], gy = soup[i+7], gz = soup[i+8];
+      const v = (ax * (by*gz - bz*gy) - ay * (bx*gz - bz*gx) + az * (bx*gy - by*gx)) / 6;
+      vol += v; vcx += v * (ax+bx+gx) / 4; vcy += v * (ay+by+gy) / 4;
+    }
+
     let cx = 0, cy = 0, wsum = 0;
     const tri = [];
     for (let i = 0; i < soup.length; i += 9) {
@@ -269,6 +282,7 @@ serve({
     }
     if (!wsum) return { order: 1, why: 'no area' };
     cx /= wsum; cy /= wsum;
+    if (Math.abs(vol) > 1e-9) { cx = vcx / vol; cy = vcy / vol; }
 
     let rMax = 0;
     for (let i = 0; i < tri.length; i += 3) {

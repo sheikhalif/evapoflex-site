@@ -299,6 +299,56 @@ export async function boot({ workerSources, baseUrl }) {
     return { planes, sectors, bands };
   }
 
+  /**
+   * Snap a nearly-symmetric model onto its own symmetry, then split it.
+   *
+   * A model that only ALMOST repeats cannot come apart into identical parts,
+   * however good the planner is - the parts are not identical in the source.
+   * The EEDX wheel repeats to within 4.6% at a half turn and 6.8% at an eighth,
+   * and the error grows with the order, which is the signature of arms that sit
+   * at slightly irregular angles rather than one bad arm. Rebuilding it from a
+   * single sector makes it exact.
+   *
+   * This changes the model, so it says by how much and leaves the decision with
+   * the user.
+   */
+  async function makeSymmetric() {
+    const m = state.model;
+    if (!m?.csgId) { say('Import a model first.', true, 5000); return; }
+    try {
+      setProgress(0.1);
+      const sym = await geom.call('geom.symmetry', { id: m.geomId, tol: 0.12 });
+      if (sym.order < 4) {
+        setProgress(0);
+        say(`No usable rotational symmetry about Z (best order ${sym.order}) - nothing to snap to.`, true, 7000);
+        return;
+      }
+      setProgress(0.4);
+      const r = await csg.call('csg.symmetrize', { solidId: m.csgId, order: sym.order, centre: sym.centre });
+      const mesh = await csg.call('csg.mesh', { solidId: r.solidId });
+      const id = `m${state.seq++}`;
+      const adopted = await geom.call('geom.adopt', { id, name: `${m.name} (symmetric)`,
+        vertProperties: mesh.vertProperties, triVerts: mesh.triVerts });
+      // Replace the model in place; the old solid and analysis go with it.
+      disposeGroup(m.group); stage.world.remove(m.group);
+      geom.call('geom.free', { id: m.geomId });
+      csg.call('csg.release', { solidIds: [m.csgId] });
+      const group = new THREE.Group();
+      const mesh3 = meshFromRender(adopted.render, solidMaterial(0x8fa8bc, clipping));
+      const edges = linesFromSegs(adopted.edges, edgeMaterial(clipping));
+      group.add(mesh3, edges);
+      centreOnBed(group, adopted.summary.bbox);
+      state.modelOffset = group.position.clone();
+      stage.world.add(group);
+      state.model = { geomId: id, csgId: r.solidId, csgError: null, name: adopted.summary.name,
+        summary: adopted.summary, group, mesh: mesh3, edges };
+      stage.frameObject(shiftedBbox(adopted.summary.bbox, group.position));
+      refreshModelCard(); refreshActions();
+      setProgress(1);
+      say(`Snapped to ${r.order}-fold symmetry: ${r.movedMm3.toFixed(0)} mm3 moved, ${r.movedPct.toFixed(2)}% of the model. Re-run Auto Split for identical parts.`, false, 9000);
+    } catch (e) { setProgress(0); say(e.message, true, 8000); }
+  }
+
   async function symmetricSplit() {
     const m = state.model;
     if (!m) return;
@@ -1208,6 +1258,7 @@ export async function boot({ workerSources, baseUrl }) {
       el('div', { class: 'btnrow' },
         button('Auto Split', () => autoSplit(), ''),
         button('Auto Chamfer', autoChamfer, 'g'),
+        button('Symmetrise', makeSymmetric, 'g'),
         button('Auto-Arrange', arrange, 'g')),
       el('div', { class: 'note' },
         'Split cuts the model into printer-sized parts and joints every seam it can. Chamfer eases convex right angles. Arrange packs the parts onto plates.'),
@@ -1996,6 +2047,6 @@ export async function boot({ workerSources, baseUrl }) {
 
   // A named handle for tests and for poking at the tool from the console. It
   // lives behind the gate, so it exposes nothing the page does not already hold.
-  window.__pp = { state, geom, csg, stage, autoSplit, symmetricSplit, arrange, addManualPlane, importSTL, setView, openExport,
+  window.__pp = { state, geom, csg, stage, autoSplit, symmetricSplit, arrange, addManualPlane, importSTL, setView, openExport, makeSymmetric,
     get pinned() { return pinnedPart; }, showPartCard, splitQuality };
 }
