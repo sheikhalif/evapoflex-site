@@ -242,6 +242,81 @@ export async function boot({ workerSources, baseUrl }) {
   };
 
   /**
+   * A cut set that respects the model's own symmetry.
+   *
+   * The planner cuts an axis-aligned grid, and a grid is at best four-fold
+   * symmetric, so an eight-armed wheel comes apart into one-offs: 24 parts of
+   * 20 distinct shapes on the EEDX wheel, 16 of them unique. What makes parts
+   * repeat is not cutting each arm "the same" one at a time - it is choosing a
+   * set of planes that maps onto ITSELF under the model's rotation. Do that and
+   * the partition is symmetric too, so the pieces come out in orbits of
+   * identical parts, whatever order the tree happens to apply them in.
+   *
+   * Two families, both invariant under a turn of one sector:
+   *   radial   planes containing the axis, one per sector boundary. A plane
+   *            through the axis covers two opposite boundaries at once, so an
+   *            even order needs only half as many.
+   *   rings    planes perpendicular to each sector's own bisector at a fixed
+   *            radius - together a regular polygon, which is as close to a
+   *            circle as flat cuts get.
+   *
+   * The sector count may have to be a MULTIPLE of the symmetry order: eight
+   * sectors of a 1 m wheel are 383 mm across at the rim and no bed takes that.
+   * A multiple of a symmetry is still a symmetry, so subdividing is free.
+   */
+  function symmetricPlanes(sym, bed) {
+    const margin = 10;
+    const lim = Math.max(20, Math.min(bed.x, bed.y) - margin);
+    const R = sym.rMax, c = sym.centre;
+    if (!(sym.order >= 2) || !(R > 0)) return null;
+
+    // Enough sectors that the outermost band fits across, and still a multiple
+    // of the order so the set stays invariant.
+    let sectors = sym.order;
+    while (2 * R * Math.sin(Math.PI / sectors) > lim && sectors < 256) sectors += sym.order;
+    const step = 2 * Math.PI / sectors;
+    const planes = [];
+
+    const half = sectors % 2 === 0 ? sectors / 2 : sectors;
+    for (let k = 0; k < half; k++) {
+      const t = sym.phaseRad + k * step;
+      const n = [-Math.sin(t), Math.cos(t), 0];
+      planes.push({ n, d: n[0] * c[0] + n[1] * c[1] });
+    }
+
+    const bands = Math.max(1, Math.ceil(R / lim));
+    for (let j = 1; j < bands; j++) {
+      const rad = (j * R) / bands;
+      for (let k = 0; k < sectors; k++) {
+        const b = sym.phaseRad + (k + 0.5) * step;
+        const n = [Math.cos(b), Math.sin(b), 0];
+        planes.push({ n, d: n[0] * c[0] + n[1] * c[1] + rad });
+      }
+    }
+    return { planes, sectors, bands };
+  }
+
+  async function symmetricSplit() {
+    const m = state.model;
+    if (!m) return;
+    if (!m.csgId) { say(`Cannot split: ${m.csgError}`, true, 7000); return; }
+    try {
+      setProgress(0.05);
+      const sym = await geom.call('geom.symmetry', { id: m.geomId });
+      if (sym.order < 2) {
+        setProgress(0);
+        say(`No rotational symmetry found about Z - nothing to align cuts to. Use Auto Split.`, true, 7000);
+        return;
+      }
+      const built = symmetricPlanes(sym, state.bed);
+      if (!built) { setProgress(0); say('Could not build a symmetric cut set.', true, 6000); return; }
+      say(`${sym.order}-fold symmetry (${(sym.err * 100).toFixed(1)}% mismatch) - cutting ${built.sectors} sectors x ${built.bands} bands.`);
+      state.symmetry = sym;
+      await autoSplit(built.planes);
+    } catch (e) { setProgress(0); say(e.message, true, 7000); }
+  }
+
+  /**
    * Cut with the joint profile instead of a plane, where that is the honest
    * thing to do.
    *
@@ -264,10 +339,19 @@ export async function boot({ workerSources, baseUrl }) {
       profiled.set(idx, { used: false, why: `${sec.thickness.toFixed(1)} mm stock takes a stamped joint` });
       return null;
     }
+    // NO BOSS. A joint may only redistribute material across the face it is cut
+    // on: whatever the tab adds to one side is exactly what the socket takes
+    // from the other, so the two halves put back together are the solid they
+    // came from. The pad broke that - it welded material onto the rail that was
+    // never in the model, which is a different object, not a jointed one.
+    //
+    // The joint sizes itself from the face it has to live in. That face is the
+    // rail's width by the sheet's thickness, so its area is the only honest
+    // budget for how big the tab can be.
     const r = await csg.call('csg.splitProfiled', {
       solidId: parentId, plane: pl,
       stock: { tabs: sec.lumps.map((l) => ({ at: l.at, width: l.width })) },
-      opts: { type: 'dovetail', boss: {}, clearance: fit().tol, tabMax: state.sMax },
+      opts: { type: 'dovetail', clearance: fit().tol, faceThickness: sec.thickness },
     });
     if (r.aId == null) { profiled.set(idx, { used: false, why: r.why }); return null; }
     profiled.set(idx, {
@@ -1508,5 +1592,5 @@ export async function boot({ workerSources, baseUrl }) {
 
   // A named handle for tests and for poking at the tool from the console. It
   // lives behind the gate, so it exposes nothing the page does not already hold.
-  window.__pp = { state, geom, csg, stage, autoSplit, arrange, addManualPlane };
+  window.__pp = { state, geom, csg, stage, autoSplit, symmetricSplit, arrange, addManualPlane };
 }

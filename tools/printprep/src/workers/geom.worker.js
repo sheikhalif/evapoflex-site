@@ -226,6 +226,96 @@ serve({
    * placement per plane - for the main thread to execute against the CSG
    * worker.
    */
+  /**
+   * Rotational symmetry about the Z axis: how many times the model repeats.
+   *
+   * The point of finding it is that a symmetric object should come apart into
+   * repeats of ONE part, not into a bagful of one-offs. The planner cuts an
+   * axis-aligned grid, and a grid can only ever be four-fold symmetric, so a
+   * sixteen-spoke wheel cut on one comes out as sixteen different pieces -
+   * measured on the EEDX wheel, 24 parts of 20 distinct shapes, 16 of them
+   * one-offs. Cutting on the model's own symmetry instead makes them repeats.
+   *
+   * Detection is an area-weighted histogram of where material sits around the
+   * axis, compared against itself rotated by one sector. That is cheap, needs
+   * no correspondence between triangles, and degrades sensibly: a nearly
+   * symmetric model scores nearly symmetric rather than passing or failing on
+   * one stray vertex.
+   */
+  async 'geom.symmetry'({ id, tol = 0.06 }) {
+    const e = parts.get(id);
+    if (!e) throw new Error('unknown part');
+    const soup = soupOf(e.m);
+    const BINS = 1440;                       // a quarter-degree; divides by 16
+    const hist = new Float64Array(BINS);
+
+    // Area-weighted centroid in XY. On anything with a symmetry axis this IS
+    // the axis, and taking it from the bounding box instead would put it off
+    // centre the moment the model is not framed symmetrically.
+    let cx = 0, cy = 0, wsum = 0;
+    const tri = [];
+    for (let i = 0; i < soup.length; i += 9) {
+      const ax = soup[i], ay = soup[i + 1], az = soup[i + 2];
+      const bx = soup[i + 3], by = soup[i + 4], bz = soup[i + 5];
+      const gx = soup[i + 6], gy = soup[i + 7], gz = soup[i + 8];
+      const ux = bx - ax, uy = by - ay, uz = bz - az;
+      const vx = gx - ax, vy = gy - ay, vz = gz - az;
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const area = 0.5 * Math.hypot(nx, ny, nz);
+      if (!(area > 0)) continue;
+      const mx = (ax + bx + gx) / 3, my = (ay + by + gy) / 3;
+      cx += mx * area; cy += my * area; wsum += area;
+      tri.push(mx, my, area);
+    }
+    if (!wsum) return { order: 1, why: 'no area' };
+    cx /= wsum; cy /= wsum;
+
+    let rMax = 0;
+    for (let i = 0; i < tri.length; i += 3) {
+      const dx = tri[i] - cx, dy = tri[i + 1] - cy;
+      const r = Math.hypot(dx, dy);
+      if (r > rMax) rMax = r;
+      let b = Math.floor((Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI) * BINS);
+      if (b < 0) b = 0; else if (b >= BINS) b = BINS - 1;
+      hist[b] += tri[i + 2];
+    }
+    const total = hist.reduce((a, b) => a + b, 0) || 1;
+
+    // How well does the model sit on top of itself after one sector's turn?
+    const errAt = (shift) => {
+      let err = 0;
+      for (let i = 0; i < BINS; i++) err += Math.abs(hist[i] - hist[(i + shift) % BINS]);
+      return err / total;
+    };
+    const scores = [];
+    let order = 1;
+    for (let N = 2; N <= 64; N++) {
+      if (BINS % N) continue;               // only orders the bins can express
+      const err = errAt(BINS / N);
+      scores.push({ N, err: +err.toFixed(4) });
+      if (err < tol) order = N;             // keep the largest that holds
+    }
+
+    // Where to put the cuts: the offset within one sector whose N rays cross
+    // the least material. On a spoked wheel that is the gap between spokes,
+    // which is where a cut belongs - through air rather than through a spoke.
+    let phase = 0;
+    if (order > 1) {
+      const step = BINS / order;
+      let best = Infinity;
+      for (let o = 0; o < step; o++) {
+        let m = 0;
+        for (let k = 0; k < order; k++) m += hist[(o + k * step) % BINS];
+        if (m < best) { best = m; phase = o; }
+      }
+    }
+    return {
+      order, centre: [cx, cy], rMax, phaseRad: -Math.PI + (phase + 0.5) * 2 * Math.PI / BINS,
+      err: order > 1 ? +errAt(BINS / order).toFixed(4) : null,
+      scores: scores.filter((s) => s.err < 0.25).slice(0, 12),
+    };
+  },
+
   async 'geom.plan'({ id, bed, sMax, fit, nozzle, manualPlanes }, ctx) {
     const e = parts.get(id);
     if (!e) throw new Error('unknown part');

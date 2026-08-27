@@ -122,11 +122,13 @@ export function seamParams(type, stock, opts = {}) {
     const t = Math.tan(flankDeg * Math.PI / 180);
     head = headMax;
     neck = Math.max(minNeck, (opts.neckRatio ?? 0.5) * head);
-    // `reach` is a fraction of the stock, so on wide stock it produced a tab
-    // longer than most parts - 216 mm on a 240 mm rail. A joint has a sensible
-    // absolute size, which is what the user's Max size already means, so cap by
-    // it rather than letting the tab grow with the material it sits in.
-    L = Math.min(reach * W, (head - neck) / (2 * t), opts.tabMax ?? Infinity);
+    // `reach` is a fraction of the WIDTH alone, so on wide stock it produced a
+    // tab longer than most parts - 216 mm on a 240 mm rail. The face a joint
+    // lives in is width x thickness, and its area is the honest budget: a joint
+    // of side sqrt(area) is the largest square that face could hold. On 6 x 10
+    // stock that is 7.7 mm, on 240 x 10 it is 49 mm.
+    const faceSide = opts.faceThickness ? Math.sqrt(rawW * Number(opts.faceThickness)) : Infinity;
+    L = Math.min(reach * W, (head - neck) / (2 * t), opts.tabMax ?? Infinity, faceSide);
   }
 
   const tabL = L;
