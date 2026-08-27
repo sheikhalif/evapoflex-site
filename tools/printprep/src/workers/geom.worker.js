@@ -350,7 +350,7 @@ serve({
       // plane to every piece it crosses, in order.
       plan = manualTree(proxy, manualPlanes);
     } else {
-      plan = planSplit(proxy, analysis, { bed, protrusion: prot, sMax, budgetMs: 15000 });
+      plan = planSplit(proxy, analysis, { bed, protrusion: prot, sMax, budgetMs: 120000 });
     }
     ctx.progress('joints', 0.6);
 

@@ -133,7 +133,43 @@ function soupTris(soup) {
  *   seam       section perimeter relative to the piece - the visible scar
  *   balance    how evenly the cut divides the volume (proxy: bbox volumes)
  */
+/**
+ * The widest single lump of material the seam passes through.
+ *
+ * A stamped joint needs an inscribed SQUARE, which is what sFit measures. A
+ * profiled joint does not - it is cut through the full thickness, so what
+ * limits it is how wide the rail is across the seam, and nothing else. On sheet
+ * stock sFit is tiny for every candidate, so the joint term of the cost went
+ * flat and the planner had no reason to prefer a cut through a 240 mm plate
+ * over one through a 6 mm rail. This is the gradient that was missing.
+ *
+ * Widest rather than total: four 6 mm rails and one 24 mm plate put the same
+ * material across the seam, and only one of them can hold a joint.
+ *
+ * A column scan, not a flood fill. For any seam that runs straight down through
+ * a sheet, frameOf puts the section's own u axis along z, so a raster column is
+ * a line of constant thickness and a contiguous run down it is exactly one
+ * rail's width. The first version projected every cell into world space and
+ * flood-filled: correct, and slow enough that the 15 s search budget expired
+ * after 6 of the 15 cuts the wheel needs, which is a worse plan than no bias
+ * at all. Scoring runs thousands of times; it has to stay nearly free.
+ */
+function widestLump(grid, sec) {
+  if (Math.abs(sec.u[2]) < 0.9) return 0;        // not a straight-down seam
+  const { mask, w, h, cell } = grid;
+  let widest = 0;
+  for (let i = 0; i < w; i++) {
+    let run = 0;
+    for (let j = 0; j < h; j++) {
+      if (mask[j * w + i]) { run++; if (run > widest) widest = run; }
+      else run = 0;
+    }
+  }
+  return widest * cell;
+}
+
 export function scorePlane(piece, plane, ctx) {
+  if (ctx.work) ctx.work.n++;
   const { n, d } = plane;
   const { a, b } = clipSoup(piece.soup, n, d);
   if (a.length < 27 || b.length < 27) return { cost: Infinity };
@@ -183,6 +219,20 @@ export function scorePlane(piece, plane, ctx) {
   if (jointless && !ctx.allowJointless) return { cost: Infinity };
 
   const sTarget = Math.min(ctx.sMax, Math.max(ctx.sMin, sFit));
+
+  // What a PROFILED joint could grip here, if a stamped one cannot fit.
+  //
+  // The tab is cut through the thickness, so the rail's width sets the head,
+  // the head sets the undercut, and the face's area caps the reach. Flat 1.5
+  // for every jointless candidate said "no joint either way" and let the
+  // planner cut a 6 mm rail as happily as a 240 mm plate; grading it says
+  // "some of these seams can still hold something" and steers toward them.
+  const widest = jointless ? widestLump(grid, sec) : 0;
+  const profGrip = jointless
+    ? Math.max(0, Math.min((widest - 2.4) / 4, Math.sqrt(Math.max(0, widest) * (sec.area / Math.max(widest, 1e-6)))))
+    : 0;
+  const GOOD_GRIP = 3;                    // mm of undercut worth calling a joint
+  const profBonus = Math.min(1, profGrip / GOOD_GRIP);
   const jointCap = jointless ? 1.5 : Math.max(0, (ctx.sMax - sFit) / (ctx.sMax - ctx.sMin));
 
   const nTargetJoints = Math.max(1, Math.min(4, Math.floor(sec.area / (6 * sTarget * sTarget))));
@@ -205,14 +255,24 @@ export function scorePlane(piece, plane, ctx) {
 
   const axisAligned = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])].some((v) => v > 0.999);
 
+  // The profiled-joint term is a TIE-BREAKER, deliberately small.
+  //
+  // Grading jointCap itself gave it a full 1.0 swing - as large as the area
+  // term - and joint quality started outbidding printability: the wheel's
+  // search chased wide seams through the rim, wandered, and hit its budget
+  // after 6 of the 15 cuts it needs, leaving three oversize pieces. A part that
+  // does not fit the bed cannot be printed at all, so fit has to win every
+  // time; this only decides between cuts that are otherwise as good as each
+  // other, which is exactly where "and this one can hold a joint" belongs.
   const cost =
     1.5 * jointCap +
     1.0 * areaPen +
     0.4 * seam +
     0.3 * balance +
-    (axisAligned ? 0 : 0.25);
+    (axisAligned ? 0 : 0.25) -
+    0.25 * profBonus;
 
-  return { cost, a, b, section: sec, sFit, sTarget, nTargetJoints, jointless };
+  return { cost, a, b, section: sec, sFit, sTarget, nTargetJoints, jointless, profGrip, widest };
 }
 
 const boxVol = (b) => Math.max(0, b.max[0] - b.min[0]) * Math.max(0, b.max[1] - b.min[1]) * Math.max(0, b.max[2] - b.min[2]);
@@ -238,7 +298,19 @@ export function planSplit(rootSoup, analysis, opts) {
   const bed = opts.bed;
   const prot = opts.protrusion;
   const margin = opts.margin ?? 2;
-  const ctx = { sMin: opts.sMin ?? 12, sMax: opts.sMax ?? 25, margin: opts.jointMargin ?? 1.5, rootSoup };
+  // Work is counted, not timed.
+  //
+  // The budget used to be milliseconds alone, which makes the PLAN depend on
+  // what else the machine happens to be doing. Measured on the EEDX wheel: the
+  // same model, same code, gave 15 cuts and 34 printable parts on an idle
+  // machine and 6 cuts with three oversize pieces at load average 7 - reported
+  // as "partial plan", as though the geometry had defeated it. A user on a
+  // slower laptop would silently get the worse split. Scoring a plane is the
+  // unit of work here, so counting those makes the result reproducible; the
+  // clock stays on as a ceiling for pathological models, an order of magnitude
+  // out of the way so it never decides a normal run.
+  const ctx = { sMin: opts.sMin ?? 12, sMax: opts.sMax ?? 25, margin: opts.jointMargin ?? 1.5, rootSoup,
+                work: { n: 0 } };
   const beamWidth = opts.beamWidth ?? 4;
   const deadline = performance.now() + (opts.budgetMs ?? 6000);
   const log = [];
@@ -272,12 +344,14 @@ export function planSplit(rootSoup, analysis, opts) {
   // backstop against a pathological model.
   const need = remainingCuts([root], bed, margin, prot);
   const maxDepth = opts.maxParts ?? Math.min(400, Math.max(16, 2 * need + 8));
-  log.push(`needs at least ${need} cuts; allowing ${maxDepth} expansions`);
+  const maxWork = opts.maxWork ?? Math.max(4000, 900 * (need + 6));
+  log.push(`needs at least ${need} cuts; allowing ${maxDepth} expansions, ${maxWork} plane scores`);
 
   for (let depth = 0; depth < maxDepth; depth++) {
     const done = beam.find((s) => s.pieces.every((p) => p.fit));
     if (done) { log.push(`solved at depth ${depth}, ${done.pieces.length} pieces`); return finish(done, log, all); }
-    if (performance.now() > deadline) { log.push('budget hit - taking best partial'); break; }
+    if (ctx.work.n > maxWork) { log.push(`work budget hit (${ctx.work.n} plane scores) - taking best partial`); break; }
+    if (performance.now() > deadline) { log.push('clock ceiling hit - taking best partial'); break; }
 
     // Duplicate suppression stops the beam collapsing into permutations of one
     // configuration, but taken as law it can also strangle it: with few viable
