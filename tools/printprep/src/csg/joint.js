@@ -85,7 +85,16 @@ export function params(size = 30, opts = {}) {
 // ------------------------------------------------------------------ primitives
 
 const hull = (pts) => ctx().Manifold.hull(pts);
-const box = (sx, sy, sz, c = [0, 0, 0]) => ctx().Manifold.cube([sx, sy, sz], true).translate(c);
+// cube() allocates and translate() allocates again, so the untranslated cube
+// has to go or it is stranded for the session - measured at ~7 KB apiece, and
+// makeJoint builds a dozen per call on the interactive preview path.
+const box = (sx, sy, sz, c = [0, 0, 0]) => {
+  const m = ctx().Manifold.cube([sx, sy, sz], true);
+  if (!c[0] && !c[1] && !c[2]) return m;
+  const t = m.translate(c);
+  m.delete();
+  return t;
+};
 const uni = (...m) => ctx().Manifold.union(m.flat());
 const dif = (a, b) => ctx().Manifold.difference([a, b]);
 const int = (a, b) => ctx().Manifold.intersection([a, b]);

@@ -38,7 +38,15 @@
 import { ctx } from './manifoldCtx.js';
 import { dstack } from './joint.js';
 
-const box = (x, y, z, c = [0, 0, 0]) => ctx().Manifold.cube([x, y, z], true).translate(c);
+// See joint.js: cube() then translate() is two allocations, and only the
+// translated one is wanted.
+const box = (x, y, z, c = [0, 0, 0]) => {
+  const m = ctx().Manifold.cube([x, y, z], true);
+  if (!c[0] && !c[1] && !c[2]) return m;
+  const t = m.translate(c);
+  m.delete();
+  return t;
+};
 const uni = (...s) => ctx().Manifold.union(s.flat());
 const sub = (a, b) => a.subtract(b);
 const int = (a, b) => a.intersect(b);
@@ -247,7 +255,9 @@ function pillarSolid(p, grow = 0) {
   const r = p.pillarR + grow;
   const posts = [];
   for (const s of [-1, 1]) {
-    const cyl = Manifold.cylinder(p.T + 2, r, r, 24, false).translate([s * p.pillarAt, p.pillarDepth / 2, -1]);
+    const raw = Manifold.cylinder(p.T + 2, r, r, 24, false);
+    const cyl = raw.translate([s * p.pillarAt, p.pillarDepth / 2, -1]);
+    raw.delete();
     posts.push(cyl);
     if (p.pillars < 2) break;
   }
