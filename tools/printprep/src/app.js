@@ -363,8 +363,24 @@ export async function boot({ workerSources, baseUrl }) {
       }
       const built = symmetricPlanes(sym, state.bed);
       if (!built) { setProgress(0); say('Could not build a symmetric cut set.', true, 6000); return; }
-      say(`${sym.order}-fold symmetry (${(sym.err * 100).toFixed(1)}% mismatch) - cutting ${built.sectors} sectors x ${built.bands} bands.`);
       state.symmetry = sym;
+      // MEASURED AND NOT SHIPPED. Radial cuts do make the sectors identical,
+      // but the ring cuts that shorten each sector are infinite PLANES, and
+      // manualTree applies every plane to every piece it crosses - so each
+      // ring cut slices all sixteen sectors instead of its own. On the wheel
+      // that turned 35 parts into 280, with simplicity 35 against 24 and
+      // strength 29 against 55: worse on every axis it was meant to improve.
+      //
+      // The fix is not a tweak to the plane set. A plan node names one parent
+      // piece and two children, but nothing lets a cut say "only this piece" -
+      // so sector-local ring cuts need the plan format to carry per-piece
+      // assignment first. Refusing beats quietly producing 280 parts.
+      setProgress(0);
+      say(`${sym.order}-fold symmetry found (${(sym.err * 100).toFixed(1)}% mismatch), but symmetric splitting is `
+        + `not ready: ring cuts run across every sector, which made 280 parts where Auto Split makes 35. `
+        + `Use Symmetrise to make the model exactly ${sym.order}-fold, then Auto Split.`, true, 11000);
+      return;
+      // eslint-disable-next-line no-unreachable
       await autoSplit(built.planes);
     } catch (e) { setProgress(0); say(e.message, true, 7000); }
   }
