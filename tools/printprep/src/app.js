@@ -216,6 +216,59 @@ export async function boot({ workerSources, baseUrl }) {
     return `${seam.planeIdx}|${c(seam.a.bbox)}|${c(seam.b.bbox)}`;
   };
 
+  /**
+   * Which of a profiled cut's tabs belongs to this seam.
+   *
+   * One plane can carry a tab per rail it crosses and produce a seam per pair
+   * of components, so the two lists have to be matched by position: the tab
+   * whose centre lies in the material both components share along the seam.
+   */
+  const tabForSeam = (seam, prof) => {
+    const u = prof.uAxis;
+    const lo = Math.max(seam.a.bbox.min[u], seam.b.bbox.min[u]);
+    const hi = Math.min(seam.a.bbox.max[u], seam.b.bbox.max[u]);
+    return prof.tabs.find((t) => t.at >= lo - 0.5 && t.at <= hi + 0.5) || null;
+  };
+
+  /**
+   * Cut with the joint profile instead of a plane, where that is the honest
+   * thing to do.
+   *
+   * The stamped EVF joint needs about 12 mm of cut face to sit on. Below that
+   * `placeJoints` gives up and the seam comes back as glue - which is the whole
+   * reason the profiled cut exists: on thin stock the joint cannot be a boss on
+   * a face, so the cut path itself becomes the joint. Above that threshold the
+   * stamped joint is the proven one and this leaves it alone; the wheel's 10 mm
+   * sheet takes this path, the fork and the bracket do not.
+   *
+   * The tab list can only be measured here. The planner works on a triangle
+   * soup and never sees the solid, so which rails a seam crosses - and how wide
+   * each one is - is not knowable until the real parent is in hand.
+   */
+  const SEAM_MIN_FACE = 12;              // mm, matches placeJoints' own sMin
+  async function profiledCut(parentId, pl, idx, profiled) {
+    const sec = await csg.call('csg.seamSection', { solidId: parentId, plane: pl });
+    if (!sec.lumps.length) return null;
+    if (sec.thickness >= SEAM_MIN_FACE) {
+      profiled.set(idx, { used: false, why: `${sec.thickness.toFixed(1)} mm stock takes a stamped joint` });
+      return null;
+    }
+    const r = await csg.call('csg.splitProfiled', {
+      solidId: parentId, plane: pl,
+      stock: { tabs: sec.lumps.map((l) => ({ at: l.at, width: l.width })) },
+      opts: { type: 'dovetail', boss: {}, clearance: fit().tol, tabMax: state.sMax },
+    });
+    if (r.aId == null) { profiled.set(idx, { used: false, why: r.why }); return null; }
+    profiled.set(idx, {
+      used: true, tabs: r.tabs, maleOn: r.maleOn, jointed: r.jointed,
+      // The tab side overshoots the plane by the tab's own length; the seam
+      // finder has to know by how much or it will not see that side touching.
+      reach: Math.max(0, ...r.tabs.map((t) => (t.plain ? 0 : t.params.tabL))),
+      uAxis: [0, 1, 2].findIndex((k) => Math.abs(pl.n[k]) > 0.999) === 0 ? 1 : 0,
+    });
+    return r;
+  }
+
   async function executePlan(plan) {
     const m = state.model;
     // A re-split replaces everything downstream: the old parts' solids, their
@@ -236,9 +289,21 @@ export async function boot({ workerSources, baseUrl }) {
     const parents = new Set(plan.planes.map((p) => p.parentId));
 
     setProgress(0.4);
+    const profiled = new Map();     // plane index -> what the profiled cut did
     for (let i = 0; i < plan.planes.length; i++) {
       const pl = plan.planes[i];
-      const r = await csg.call('csg.splitOne', { solidId: idMap.get(pl.parentId), plane: pl });
+      const parentId = idMap.get(pl.parentId);
+      let r = null;
+      try {
+        r = await profiledCut(parentId, pl, i, profiled);
+      } catch (e) {
+        // Every refusal is a fallback, never a failure: splitProfiled throws
+        // rather than cut a seam wrong, and it leaves the parent handle alone
+        // when it does, so the plain cut below can still have it.
+        profiled.set(i, { used: false, why: e.message });
+        r = null;
+      }
+      if (!r) r = await csg.call('csg.splitOne', { solidId: parentId, plane: pl });
       if (r.aId == null) throw new Error('a planned cut missed the model - re-run Auto Split');
       idMap.set(pl.aId, r.aId);
       idMap.set(pl.bId, r.bId);
@@ -305,8 +370,17 @@ export async function boot({ workerSources, baseUrl }) {
     const seams = [];
     for (let i = 0; i < plan.planes.length; i++) {
       const pl = plan.planes[i];
-      const aSide = comps.filter((c) => inSubtree(c.leaf, pl.aId) && Math.abs(span(c.bbox, pl.n)[0] - pl.d) < TOUCH);
-      const bSide = comps.filter((c) => inSubtree(c.leaf, pl.bId) && Math.abs(span(c.bbox, pl.n)[1] - pl.d) < TOUCH);
+      // "Reaches the plane", not "ends exactly on it".
+      //
+      // Everything in the A subtree lies at or above d and everything in the B
+      // subtree at or below it, so asking whether a component reaches the plane
+      // is the same test as before for a plain cut - but it survives a profiled
+      // one, where the tab side overshoots by the tab's length. At 3.9 mm on
+      // the wheel's rails that is fifteen times TOUCH, so the old equality test
+      // dropped every profiled seam, and with it the joint row and the explode
+      // edge for a joint that was physically there.
+      const aSide = comps.filter((c) => inSubtree(c.leaf, pl.aId) && span(c.bbox, pl.n)[0] < pl.d + TOUCH);
+      const bSide = comps.filter((c) => inSubtree(c.leaf, pl.bId) && span(c.bbox, pl.n)[1] > pl.d - TOUCH);
       for (const a of aSide) {
         for (const b of bSide) {
           if (!overlapsInPlane(a.bbox, b.bbox, pl.n)) continue;
@@ -323,6 +397,30 @@ export async function boot({ workerSources, baseUrl }) {
     let jseq = 0, plain = 0;
     for (let s = 0; s < seams.length; s++) {
       const seam = seams[s];
+      // A profiled seam is already mated - the joint IS the cut, so there is
+      // nothing to site and nothing to stamp, and no containment to audit
+      // because a joint shaped like the cut cannot poke out of its own part.
+      const prof = profiled.get(seam.planeIdx);
+      if (prof?.used) {
+        const tab = tabForSeam(seam, prof);
+        seam.profiled = true;
+        seam.why = tab?.why || null;
+        if (tab && !tab.plain) {
+          seam.placement = { profiled: true, grip: tab.params.grip, width: tab.width };
+          state.joints.push({
+            id: `j${jseq++}`, seamKey: seamKey(seam), planeIdx: seam.planeIdx,
+            kind: 'profiled', aComp: seam.a, bComp: seam.b,
+            axis: seam.plane.n.slice(), maleOn: prof.maleOn,
+            grip: tab.params.grip, tabL: tab.params.tabL, width: tab.width,
+            type: tab.params.type, sites: [], hb: 0,
+          });
+        } else {
+          seam.placement = null;
+          plain++;
+        }
+        setProgress(0.6 + 0.1 * (s + 1) / seams.length);
+        continue;
+      }
       // Keep-outs: only the cuts that actually pass through one of these two
       // components. A plane on the far side of the model draws a keep-out band
       // across all of space, and including it would veto perfectly good sites
@@ -355,7 +453,14 @@ export async function boot({ workerSources, baseUrl }) {
         seam.why = r?.why || null;
       } catch (e) { placed = null; seam.why = e.message; }
       seam.placement = placed;
-      if (!placed) { plain++; continue; }
+      if (!placed) {
+        // Say why BOTH answers were unavailable. Reporting only the stamped
+        // joint's reason on stock too thin to ever take one is half the story,
+        // and the half that cannot be acted on.
+        if (prof && !prof.used && prof.why) seam.why = `${seam.why || 'no stamped joint'}; cut joint: ${prof.why}`;
+        plain++;
+        continue;
+      }
 
       const key = seamKey(seam);
       const maleOn = state.plan?.swaps?.[key] ? 'A' : 'B';
@@ -376,6 +481,7 @@ export async function boot({ workerSources, baseUrl }) {
     }
     state.plainSeams = plain;
     state.islandCount = islands;
+    state.profiledPlanes = profiled;
 
     // ---------------------------------------------------------------- parts
     if (state.model) state.model.group.visible = false;
@@ -434,6 +540,10 @@ export async function boot({ workerSources, baseUrl }) {
 
   async function buildJointPreviews() {
     for (const j of state.joints) {
+      // A profiled joint has no separate solid to preview - it is the shape of
+      // the seam, already in both parts, and it shows up in Ghost view as the
+      // parts themselves.
+      if (j.kind === 'profiled') { j.siteMeshes = []; continue; }
       const prev = await csg.call('csg.jointPreview', { S: j.S, fit: fit() });
       const flip = j.maleOn === 'A';
       const nDir = flip ? j.frame.n.map((v) => -v) : j.frame.n.slice();
@@ -464,7 +574,7 @@ export async function boot({ workerSources, baseUrl }) {
       const cutNormals = jointAxes.slice();
       const joints = state.joints
         .filter((j) => j.aPartId === part.id || j.bPartId === part.id)
-        .flatMap((j) => j.sites.map((s) => ({ center: s.world, S: j.S })));
+        .flatMap((j) => (j.sites || []).map((s) => ({ center: s.world, S: j.S })));
       try {
         part.orientCands = await geom.call('geom.orient', {
           id: part.id, bed: state.bed, jointAxes, cutNormals, joints,
@@ -1057,6 +1167,15 @@ export async function boot({ workerSources, baseUrl }) {
     for (const j of state.joints) {
       const a = state.parts.find((p) => p.id === j.aPartId), b = state.parts.find((p) => p.id === j.bPartId);
       const male = j.maleOn === 'A' ? a : b;
+      // A profiled joint is the cut, so there is no stamped solid to swap sides
+      // and no containment to audit. What matters about it is the grip.
+      if (j.kind === 'profiled') {
+        jointsCard.append(el('div', { class: 'row', style: 'min-height:22px' },
+          el('span', { class: 'lbl w' }, `${j.type} ${j.grip.toFixed(1)} mm`),
+          el('span', { style: 'flex:1;font-size:10px;color:rgba(0,0,0,.5)' },
+            `${a?.name ?? '?'} ↔ ${b?.name ?? '?'} · cut joint in ${j.width.toFixed(1)} mm stock`)));
+        continue;
+      }
       const ok = j.audit?.ok;
       jointsCard.append(el('div', { class: 'row', style: 'min-height:22px' },
         el('span', { class: 'lbl w' }, `${j.S} mm ×${j.sites.length}`),

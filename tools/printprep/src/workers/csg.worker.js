@@ -297,8 +297,12 @@ serve({
         if (ask.plain) return { at, width, plain: true, params: null, why: 'asked for a plain cut' };
 
         const room = roomAt(at);
-        const wanted = opts?.boss ? seamParams(opts.type || 'dovetail', { width, thickness: T }, opts).boss.width : 0;
-        const capped = opts?.boss && wanted > room;
+        // seamParams returns a null boss when the stock is already wide enough
+        // to joint unaided, so there is nothing to cap and nothing to say.
+        const wanted = opts?.boss
+          ? (seamParams(opts.type || 'dovetail', { width, thickness: T }, opts).boss?.width ?? 0)
+          : 0;
+        const capped = wanted > room;
         const useOpts = capped
           ? { ...opts, boss: room > width ? { ...opts.boss, width: room } : null }
           : opts || {};

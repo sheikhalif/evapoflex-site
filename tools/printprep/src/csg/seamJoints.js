@@ -81,10 +81,16 @@ export function seamParams(type, stock, opts = {}) {
   // pad tapers back to the rail at 45 degrees in the PLANE OF THE SHEET, so it
   // is a vertical wall printed flat and a 45 degree wall printed on edge -
   // free in both, and no step for a crack to start at.
-  const bossW = boss
-    ? Math.max(rawW, boss.width ?? (Math.max(3 * rawW, 18) + (pillars > 0 ? 6 : 0)))
-    : rawW;
-  const bossL = boss ? (boss.length ?? Math.max(4 * rawW, 24)) : 0;
+  // The pad is a floor, not a multiplier. `3 * rawW` had no ceiling, so it kept
+  // scaling with stock that never needed padding: a 240 mm rail asked for a
+  // 720 mm pad growing 240 mm a side, which on a 256 mm bed pushed parts that
+  // fitted before straight off it. Widening to 18 mm is the whole point of the
+  // boss - once the stock is already that wide there is nothing to gain, so
+  // stock at or above the target gets no pad at all.
+  const bossTarget = 18 + (pillars > 0 ? 6 : 0);
+  const bossW = boss ? Math.max(rawW, boss.width ?? bossTarget) : rawW;
+  const padded = boss && bossW > rawW + 1e-9;
+  const bossL = padded ? (boss.length ?? Math.max(4 * rawW, 24)) : 0;
   const W = bossW;
 
   // The head is the widest part of the tab and it has to leave a socket wall
@@ -116,7 +122,11 @@ export function seamParams(type, stock, opts = {}) {
     const t = Math.tan(flankDeg * Math.PI / 180);
     head = headMax;
     neck = Math.max(minNeck, (opts.neckRatio ?? 0.5) * head);
-    L = Math.min(reach * W, (head - neck) / (2 * t));
+    // `reach` is a fraction of the stock, so on wide stock it produced a tab
+    // longer than most parts - 216 mm on a 240 mm rail. A joint has a sensible
+    // absolute size, which is what the user's Max size already means, so cap by
+    // it rather than letting the tab grow with the material it sits in.
+    L = Math.min(reach * W, (head - neck) / (2 * t), opts.tabMax ?? Infinity);
   }
 
   const tabL = L;
@@ -140,7 +150,7 @@ export function seamParams(type, stock, opts = {}) {
   // recommended direction, so the pad follows the tab rather than the tab
   // being capped to fit the pad - the extra pad costs a fraction of a gram.
   const bossRamp = (bossW - rawW) / 2;
-  const bossLen = boss ? Math.max(bossL, 2 * (tabL + bossRamp + 2)) : 0;
+  const bossLen = padded ? Math.max(bossL, 2 * (tabL + bossRamp + 2)) : 0;
 
   // Pillars: round posts standing through the full thickness, on the male's
   // shoulder either side of the tab, entering matching bores in the female.
@@ -167,7 +177,7 @@ export function seamParams(type, stock, opts = {}) {
 
   return {
     type, W, T, rawW, neck, head, R, centre, tabL, clearance, sideWall, flankDeg,
-    boss: boss ? { width: bossW, length: bossLen, ramp: bossRamp } : null,
+    boss: padded ? { width: bossW, length: bossLen, ramp: bossRamp } : null,
     pillars: pillarFit ? pillars : 0, pillarR: pr, pillarAt, pillarDepth,
     detent: detent > 0 && T >= 4 ? detent : 0,
     detentR: Math.min(detentR, 0.14 * T, 0.28 * neck),
