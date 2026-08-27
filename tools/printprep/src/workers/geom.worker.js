@@ -350,7 +350,7 @@ serve({
       // plane to every piece it crosses, in order.
       plan = manualTree(proxy, manualPlanes);
     } else {
-      plan = planSplit(proxy, analysis, { bed, protrusion: prot, sMax, budgetMs: 120000 });
+      plan = planSplit(proxy, analysis, { bed, protrusion: prot, sMax, budgetMs: 45000 });
     }
     ctx.progress('joints', 0.6);
 
@@ -384,8 +384,16 @@ serve({
       piece.fit = fitsWithJoints(fitPoints(piece.soup), piece.cutFaces, bed, prot, 2);
       if (!piece.fit) allFit = false;
     }
+    const strip = (list) => list.map((p) => ({ n: p.n, d: p.d, parentId: p.parentId, aId: p.aId, bId: p.bId, jointless: !!p.jointless }));
     return {
-      planes: plan.planes.map((p) => ({ n: p.n, d: p.d, parentId: p.parentId, aId: p.aId, bId: p.bId, jointless: !!p.jointless })),
+      // The alternatives the search found, so the caller can offer a choice
+      // rather than presenting one answer as though it were the only one.
+      options: (plan.options || []).map((o) => ({
+        label: o.label, pieces: o.pieces, distinct: o.distinct,
+        simplicity: o.simplicity, strength: o.strength, planes: strip(o.planes),
+      })),
+      chosen: plan.chosen || null,
+      planes: strip(plan.planes),
       placements: placements.map((p) => p && {
         S: p.S, T: p.T, sites: p.sites, frame: p.frame, areaMm2: p.areaMm2,
         hb: p.params.hb, depth: p.params.depth,

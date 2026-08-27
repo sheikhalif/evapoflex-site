@@ -175,6 +175,7 @@ export async function boot({ workerSources, baseUrl }) {
       for (const e of state.manualPlanes) e.helper.visible = false;
       refreshCuts();
       state.plan = { ...plan, manualPlanes };
+      state.planOptions = plan.options && plan.options.length > 1 ? plan.options : null;
 
       if (!plan.planes.length) {
         // No planes can mean two very different things, and conflating them
@@ -366,7 +367,9 @@ export async function boot({ workerSources, baseUrl }) {
     // budget for how big the tab can be.
     const r = await csg.call('csg.splitProfiled', {
       solidId: parentId, plane: pl,
-      stock: { tabs: sec.lumps.map((l) => ({ at: l.at, width: l.width })) },
+      // No `at` or `width`: the worker sizes and counts the tabs from the face
+      // itself, which is the whole point of a parametric joint.
+      stock: { tabs: sec.lumps.map(() => ({})) },
       opts: { type: state.mateType === 'puzzle' ? 'puzzle' : 'dovetail', clearance: fit().tol, faceThickness: sec.thickness },
     });
     if (r.aId == null) { profiled.set(idx, { used: false, why: r.why }); return null; }
@@ -627,7 +630,7 @@ export async function boot({ workerSources, baseUrl }) {
     await buildJointPreviews();
     await orientAll();
     layoutPartsOnBed();
-    refreshParts(); refreshActions(); refreshExport(); refreshQuality();
+    refreshParts(); refreshActions(); refreshExport(); refreshQuality(); refreshPlanOptions();
     setView('model');
   }
 
@@ -1177,6 +1180,7 @@ export async function boot({ workerSources, baseUrl }) {
     describeMate();
     jointsCard = el('div', { style: 'margin-top:9px' });
     qualityCard = el('div', { style: 'margin-top:9px' });
+    planOptCard = el('div', { style: 'margin-top:9px' });
     fitSliderCtl = steppedSlider(FIT_STOPS, state.fitIdx, (i) => {
       state.fitIdx = i;
       if (state.parts.length) say('Fit changed - re-run Auto Split to restamp the joints with the new clearances.', false, 5000);
@@ -1191,6 +1195,7 @@ export async function boot({ workerSources, baseUrl }) {
       el('div', { class: 'btnrow', style: 'margin-top:7px' },
         button('Print fit coupon', exportCoupon, 'g sm')),
       qualityCard,
+      planOptCard,
       jointsCard,
     );
 
@@ -1276,7 +1281,7 @@ export async function boot({ workerSources, baseUrl }) {
   const fmtSize = (s) => s.map((v) => Math.round(v)).join(' × ');
 
   // ================================================================ UI: right
-  var partsList, jointsCard, qualityCard;
+  var partsList, jointsCard, qualityCard, planOptCard;
   /**
    * The per-part card, which is the whole of the old right panel.
    *
@@ -1605,6 +1610,39 @@ export async function boot({ workerSources, baseUrl }) {
       strengthPct: Math.round(strength * 100),
       simplicityPct: Math.round((0.6 * reuse + 0.4 * plateUse) * 100),
     };
+  }
+
+  /**
+   * The alternative splits, when the search found more than one that works.
+   *
+   * Presenting a single plan implies it is THE answer; it is one point on a
+   * trade-off. Simplest gives the fewest, most repeated, biggest pieces.
+   * Strongest puts the seams where joints can actually hold. Balanced is the
+   * best compromise, and is what runs by default.
+   */
+  function refreshPlanOptions() {
+    if (!planOptCard) return;
+    planOptCard.innerHTML = '';
+    const opts = state.planOptions;
+    if (!opts) return;
+    planOptCard.append(el('div', { class: 'card-t', style: 'margin-top:2px' }, 'Alternative splits'));
+    for (const o of opts) {
+      const active = state.planChoice ? state.planChoice === o.label : o.label === (state.plan?.chosen || 'balanced');
+      const row = el('div', { class: 'pc-r', style: 'cursor:pointer;padding:3px 0' + (active ? ';color:#2d7cb5' : '') },
+        el('span', { style: active ? 'color:#2d7cb5;font-weight:700' : '' }, (active ? '\u25cf ' : '') + o.label),
+        el('span', {}, `${o.pieces} parts \u00b7 ${o.distinct} shapes \u00b7 S${o.strength} \u00b7 P${o.simplicity}`));
+      row.addEventListener('click', async () => {
+        if (active) return;
+        state.planChoice = o.label;
+        try {
+          setProgress(0.35);
+          await executePlan({ ...state.plan, planes: o.planes });
+          say(`Switched to the ${o.label} split: ${state.parts.length} parts.`);
+          setProgress(1);
+        } catch (e) { setProgress(0); say(e.message, true, 7000); }
+      });
+      planOptCard.append(row);
+    }
   }
 
   function refreshQuality() {

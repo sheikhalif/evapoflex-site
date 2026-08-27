@@ -347,9 +347,21 @@ export function planSplit(rootSoup, analysis, opts) {
   const maxWork = opts.maxWork ?? Math.max(4000, 900 * (need + 6));
   log.push(`needs at least ${need} cuts; allowing ${maxDepth} expansions, ${maxWork} plane scores`);
 
+  let solved = [];
   for (let depth = 0; depth < maxDepth; depth++) {
-    const done = beam.find((s) => s.pieces.every((p) => p.fit));
-    if (done) { log.push(`solved at depth ${depth}, ${done.pieces.length} pieces`); return finish(done, log, all); }
+    // Take every solved state in the beam AT THE SAME DEPTH, and stop there.
+    //
+    // Searching on past the first answer to collect more of them cost the EEDX
+    // wheel eight minutes against ninety seconds, for alternatives it never
+    // found - and a plan the user is still waiting for is not a better plan.
+    // The beam is several states wide, so when one solves, its siblings often
+    // solve on the same pass, and those are genuine alternatives that are free.
+    const done = beam.filter((st) => st.pieces.every((q) => q.fit));
+    if (done.length) {
+      solved = done;
+      log.push(`solved at depth ${depth}, ${done.length} plan${done.length === 1 ? '' : 's'}`);
+      break;
+    }
     if (ctx.work.n > maxWork) { log.push(`work budget hit (${ctx.work.n} plane scores) - taking best partial`); break; }
     if (performance.now() > deadline) { log.push('clock ceiling hit - taking best partial'); break; }
 
@@ -418,6 +430,7 @@ export function planSplit(rootSoup, analysis, opts) {
           let cost = state.cost;
           for (let i = 1; i < nSlabs && ok; i++) {
             const d = pb.min[k] + step * i;
+            if (ctx.work.n > maxWork || performance.now() > deadline) { ok = false; break; }
             const c = scorePlane(cur, { n, d }, { ...ctx, allowJointless: true });
             if (c.cost === Infinity) { ok = false; break; }
             const rawB = sectionBoundary3D(c.section);
@@ -468,6 +481,12 @@ export function planSplit(rootSoup, analysis, opts) {
         const out = [];
         const c2 = allowJointless ? { ...ctx, allowJointless: true } : ctx;
         for (const c of useCands) {
+          // Check the budget HERE, not only between depths. Scoring a plane
+          // sections a 412k-triangle soup, and one depth of a wide beam is
+          // hundreds of those - so a per-depth check let the wheel run for
+          // minutes past a budget it had already spent, with the clock ceiling
+          // never reached because it is only tested at the top of the loop.
+          if (ctx.work.n > maxWork || performance.now() > deadline) break;
           const s = scorePlane(piece, c, c2);
           if (s.cost === Infinity) continue;
           // Refuse slivers here too, not only in manual mode: a shaving cannot
@@ -525,6 +544,9 @@ export function planSplit(rootSoup, analysis, opts) {
             parentId: piece.id, aId: pa.id, bId: pb.id,
           }],
           cost: state.cost + c.cost + 0.8,
+          // What this cut could hold, banked so the finished plans can be
+          // ranked on strength and not only on how few pieces they make.
+          joint: (state.joint || 0) + (c.jointless ? (c.profGrip || 0) / 3 : 1),
         });
       }
     }
@@ -532,6 +554,8 @@ export function planSplit(rootSoup, analysis, opts) {
     }
 
     if (!next.length) { log.push('no expansions possible'); break; }
+    const readyNow = next.filter((st) => st.pieces.every((q) => q.fit));
+    if (readyNow.length) { solved = readyNow; log.push(`solved, ${readyNow.length} plans`); break; }
     // Rank by the total number of cuts the state is heading for: the ones it has
     // already made plus a lower bound on the ones it still needs. Two rankings
     // were tried and both were wrong. Pure accumulated cost punished the slab
@@ -552,15 +576,75 @@ export function planSplit(rootSoup, analysis, opts) {
     beam = next.slice(0, beamWidth);
   }
 
-  const best = beam.slice().sort((x, y) =>
-    (y.pieces.filter((p) => p.fit).length - x.pieces.filter((p) => p.fit).length) || (x.cost - y.cost))[0];
-  log.push(`partial plan: ${best.pieces.filter((p) => p.fit).length}/${best.pieces.length} pieces fit`);
-  for (const p of best.pieces) {
-    if (p.fit) continue;
-    const b = soupBounds(p.soup);
-    log.push(`  oversize piece ${p.id}: ${[0, 1, 2].map((k) => (b.max[k] - b.min[k]).toFixed(0)).join(' x ')} mm, ${p.cutFaces.length} cut faces`);
+  // Three answers, when there really are three.
+  //
+  // A split is judged on two things that pull against each other. SIMPLICITY
+  // wants few pieces, few DISTINCT pieces, and each as big as the bed allows,
+  // because every extra part is another seam to glue. STRENGTH wants seams
+  // that land where a joint can live, which usually means more cuts through
+  // fatter material. There is no single right trade, so where the search found
+  // more than one plan that WORKS, offer the extreme of each and the best
+  // compromise.
+  //
+  // "That works" is the load-bearing qualifier. Ranking the whole search
+  // archive on these scores promotes a two-piece state that has not finished
+  // cutting: one shape, enormous pieces, a perfect simplicity score and a
+  // model that does not fit the printer. Only complete plans compete.
+  const bedVol = bed.x * bed.y * bed.z;
+  const dims = (piece) => { const b = soupBounds(piece.soup);
+    return [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]]; };
+  const rate = (st) => {
+    const n = st.pieces.length;
+    const shapes = new Set(st.pieces.map((q) => dims(q).map((v) => v.toFixed(0)).sort().join('x')));
+    const biggest = Math.max(...st.pieces.map((q) => dims(q).reduce((a, b) => a * b, 1)));
+    const r = {
+      st, n, distinct: shapes.size,
+      simplicity: 0.55 * (1 - (shapes.size - 1) / Math.max(1, n - 1)) + 0.45 * Math.min(1, biggest / bedVol),
+      strength: st.planes.length ? Math.min(1, (st.joint || 0) / st.planes.length) : 0,
+    };
+    r.blend = 0.5 * r.simplicity + 0.5 * r.strength;
+    return r;
+  };
+
+  // The primary answer is the search's own: most pieces fitting, then cheapest.
+  // This is unchanged, and it is what runs.
+  const ranked = (solved.length ? solved : beam).slice().sort((x, y) =>
+    (y.pieces.filter((q) => q.fit).length - x.pieces.filter((q) => q.fit).length) || (x.cost - y.cost));
+  const best = ranked[0];
+
+  if (!solved.length) {
+    log.push(`partial plan: ${best.pieces.filter((q) => q.fit).length}/${best.pieces.length} pieces fit`);
+    for (const q of best.pieces) {
+      if (q.fit) continue;
+      const b = soupBounds(q.soup);
+      log.push(`  oversize piece ${q.id}: ${[0, 1, 2].map((k) => (b.max[k] - b.min[k]).toFixed(0)).join(' x ')} mm, ${q.cutFaces.length} cut faces`);
+    }
+    return finish(best, log, all);
   }
-  return finish(best, log, all);
+
+  const pool = solved.map(rate);
+  const pick = (key) => pool.reduce((a, b) => (b[key] > a[key] ? b : a));
+  const named = [
+    { label: 'simplest', r: pick('simplicity') },
+    { label: 'strongest', r: pick('strength') },
+    { label: 'balanced', r: pick('blend') },
+  ];
+  const options = [];
+  for (const o of named) {
+    if (options.some((q) => q.r.st === o.r.st)) continue;   // one plan, one entry
+    options.push(o);
+  }
+  log.push(`${solved.length} complete plan${solved.length === 1 ? '' : 's'}, ${options.length} distinct to choose from`);
+
+  const chosen = (options.find((o) => o.label === 'balanced') || options[0]);
+  const out = finish(chosen.r.st, log, all);
+  out.options = options.length > 1 ? options.map((o) => ({
+    label: o.label, pieces: o.r.n, distinct: o.r.distinct,
+    simplicity: Math.round(o.r.simplicity * 100), strength: Math.round(o.r.strength * 100),
+    planes: finish(o.r.st, [], all).planes,
+  })) : [];
+  out.chosen = chosen.label;
+  return out;
 }
 
 function finish(state, log, all) {

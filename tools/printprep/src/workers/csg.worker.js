@@ -257,7 +257,38 @@ serve({
         return room;                                   // full width available to this pad
       };
 
-      const tabs = paired.map(({ lump, ask }) => {
+      // How many tabs this face wants, and how wide each one's slot is.
+      //
+      // One tab per face is a template, not a fit. The face's thickness is the
+      // dimension a profiled joint cannot change - it is cut through it - so
+      // that is what sets the natural size of a tab, and the width says how
+      // many of them fit. A 240 mm rail given a single tab gets one 49 mm
+      // dovetail and 190 mm of plain butt either side of it; the same rail
+      // given six gets engagement spread along the whole seam, which is both
+      // stronger and stiffer against the seam hinging open.
+      //
+      // Narrow stock is unaffected: a 6 mm rail has room for exactly one, which
+      // is what it already had.
+      const slotsFor = (lump) => {
+        const T = Math.max(1e-3, lump.zHi - lump.zLo);
+        const want = Math.max(6, 1.6 * T) + 2 * (opts?.sideWall ?? 1.2) + 2;
+        return Math.max(1, Math.min(8, Math.floor(lump.width / want)));
+      };
+      const expanded = [];
+      for (const { lump, ask } of paired) {
+        const n = ask.count ?? (ask.width != null || ask.at != null ? 1 : slotsFor(lump));
+        if (n <= 1) { expanded.push({ lump, ask }); continue; }
+        const slot = lump.width / n;
+        for (let k = 0; k < n; k++) {
+          expanded.push({
+            lump: { ...lump, width: slot, uLo: lump.uLo + k * slot, uHi: lump.uLo + (k + 1) * slot,
+                    at: lump.uLo + (k + 0.5) * slot },
+            ask: { ...ask, at: lump.uLo + (k + 0.5) * slot, width: slot },
+          });
+        }
+      }
+
+      const tabs = expanded.map(({ lump, ask }) => {
         const at = Number(ask.at ?? lump.at);
         const width = Number(ask.width ?? lump.width);
         if (!Number.isFinite(at) || !Number.isFinite(width) || width <= 0) {
@@ -493,6 +524,32 @@ serve({
         detentR: params.detentR, detents: params.detent,
       };
       both.delete(); male.delete(); female.delete();
+      return r;
+    } finally { arena.endScope(); }
+  },
+
+  /**
+   * How much two solids agree.
+   *
+   * There was no way to boolean two arbitrary handles, so questions of the form
+   * "is this the same shape as that" - does the model match itself turned by a
+   * sector, do these two halves actually mate - could only be guessed at from
+   * bounding boxes and volumes. The symmetric difference answers them directly.
+   */
+  async 'csg.compare'({ aId, bId }) {
+    arena.beginScope();
+    try {
+      const A = arena.M(aId), B = arena.M(bId);
+      const both = forceEval(A.intersect(B));
+      const aOnly = forceEval(A.subtract(B));
+      const bOnly = forceEval(B.subtract(A));
+      const r = {
+        aVolume: A.volume(), bVolume: B.volume(),
+        sharedMm3: both.volume(), aOnlyMm3: aOnly.volume(), bOnlyMm3: bOnly.volume(),
+      };
+      r.symDiffMm3 = r.aOnlyMm3 + r.bOnlyMm3;
+      r.agreement = r.aVolume ? r.sharedMm3 / r.aVolume : 0;
+      both.delete(); aOnly.delete(); bOnly.delete();
       return r;
     } finally { arena.endScope(); }
   },
