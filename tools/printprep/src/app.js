@@ -37,6 +37,7 @@ export async function boot({ workerSources, baseUrl }) {
     proc: defaultProcess(),
     fitIdx: DEFAULT_FIT,
     sMax: 25,
+    mateType: 'dovetail',   // profiled cut is the default; 'snap' is the stamped boss
     model: null,          // {geomId, csgId, name, summary, group}
     parts: [],            // see mkPart
     joints: [],           // {id, planeIdx, aPartId, bPartId, axis, S, hb, sites, frame, maleOn, swap}
@@ -72,7 +73,8 @@ export async function boot({ workerSources, baseUrl }) {
   const L = document.getElementById('pane-l');
   const R = document.getElementById('pane-r');
   buildLeftPanel();
-  buildRightPanel();
+  buildPartCard();
+  buildTopActions();
   buildHud();
   buildDropZone();
 
@@ -149,7 +151,7 @@ export async function boot({ workerSources, baseUrl }) {
     // Seams outlive their parts otherwise, and the joints card lists a dozen
     // "? <-> ? · glue seam" rows for a model that is no longer loaded.
     state.seams = []; state.plainSeams = 0; state.islandCount = 0;
-    refreshParts(); refreshModelCard(); refreshActions(); refreshSelected(); refreshCuts();
+    refreshParts(); refreshModelCard(); refreshActions(); refreshSelected(); refreshCuts(); refreshQuality();
   }
   function disposeGroup(g) {
     g?.traverse((o) => { o.geometry?.dispose(); if (o.material?.dispose) o.material.dispose(); });
@@ -333,6 +335,10 @@ export async function boot({ workerSources, baseUrl }) {
    */
   const SEAM_MIN_FACE = 12;              // mm, matches placeJoints' own sMin
   async function profiledCut(parentId, pl, idx, profiled) {
+    if (state.mateType === 'none' || state.mateType === 'snap') {
+      profiled.set(idx, { used: false, why: state.mateType === 'none' ? 'mating feature set to none' : 'stamped snap boss chosen' });
+      return null;
+    }
     const sec = await csg.call('csg.seamSection', { solidId: parentId, plane: pl });
     if (!sec.lumps.length) return null;
     if (sec.thickness >= SEAM_MIN_FACE) {
@@ -351,7 +357,7 @@ export async function boot({ workerSources, baseUrl }) {
     const r = await csg.call('csg.splitProfiled', {
       solidId: parentId, plane: pl,
       stock: { tabs: sec.lumps.map((l) => ({ at: l.at, width: l.width })) },
-      opts: { type: 'dovetail', clearance: fit().tol, faceThickness: sec.thickness },
+      opts: { type: state.mateType === 'puzzle' ? 'puzzle' : 'dovetail', clearance: fit().tol, faceThickness: sec.thickness },
     });
     if (r.aId == null) { profiled.set(idx, { used: false, why: r.why }); return null; }
     profiled.set(idx, {
@@ -611,7 +617,7 @@ export async function boot({ workerSources, baseUrl }) {
     await buildJointPreviews();
     await orientAll();
     layoutPartsOnBed();
-    refreshParts(); refreshActions();
+    refreshParts(); refreshActions(); refreshExport(); refreshQuality();
     setView('model');
   }
 
@@ -846,6 +852,10 @@ export async function boot({ workerSources, baseUrl }) {
     }
     explodeRow.style.display = mode === 'explode' ? '' : 'none';
 
+    // The stage is a CAD void everywhere but Plates. A build plate under an
+    // assembled model is scenery: it says nothing about the model, and it puts
+    // a grid behind every joint you are trying to look at.
+    stage.bedGroup.visible = platesOn;
     if (platesOn) applyPlateLayout();
     else restoreHomeLayout();
     if (mode === 'explode') animateExplode();
@@ -1057,6 +1067,23 @@ export async function boot({ workerSources, baseUrl }) {
 
   // ================================================================ UI: left
   var actionsCard, modelCard, fitSliderCtl, cutsCard;
+  /**
+   * A card that folds. The rail carries five sections now that the right panel
+   * is gone, and all of them at once is a wall - so everything but Actions
+   * starts shut and remembers nothing, which is the honest default when the
+   * tool has just opened and there is nothing to inspect yet.
+   */
+  function foldCard(title, open, ...children) {
+    const chev = el('span', { class: 'chev' }, '\u25be');
+    const t = el('div', { class: 'card-t fold' }, title, chev);
+    const body = el('div', { class: 'card-body' }, ...children);
+    const c = el('div', { class: 'card' + (open ? '' : ' shut') }, t, body);
+    t.addEventListener('click', () => c.classList.toggle('shut'));
+    c.body = body;
+    c.head = t;
+    return c;
+  }
+
   function buildLeftPanel() {
     // Import
     const fileInput = el('input', { type: 'file', accept: '.stl', style: 'display:none' });
@@ -1089,12 +1116,12 @@ export async function boot({ workerSources, baseUrl }) {
       printerSel.value = 'custom';
       buildBed(stage, state.bed, []);
     }
-    L.append(card('Printer',
+    const printerCard = foldCard('Printer', false,
       row('Preset', printerSel),
       row('Volume X', ...bedX.nodes),
       row('Volume Y', ...bedY.nodes),
       row('Volume Z', ...bedZ.nodes),
-    ));
+    );
 
     // Global print settings
     const layerSel = select(QUALITIES.map((q) => ({ value: String(q.h), label: `${q.h.toFixed(2)} mm — ${q.name}` })),
@@ -1110,33 +1137,55 @@ export async function boot({ workerSources, baseUrl }) {
     const infill = num(state.proc.infillPct, { min: 0, max: 100, unit: '%', onchange: (v) => state.proc.infillPct = v });
     const patSel = select(INFILL_PATTERNS.map((p) => ({ value: p, label: p })), state.proc.infillPattern,
       (v) => state.proc.infillPattern = v);
-    L.append(card('Print settings',
+    const printCard = foldCard('Print settings', false,
       row('Material', matSel),
       row('Layer height', layerSel),
       row('Walls', ...walls.nodes),
       row('Infill', ...infill.nodes),
       row('Pattern', patSel),
       checkbox('Allow supports', state.proc.supports, (v) => state.proc.supports = v),
-      el('div', { class: 'note' }, 'These are the plate-wide settings. Each part can override its own on the right, and overrides travel into the 3MF.'),
-    ));
+      el('div', { class: 'note' }, 'Plate-wide. A part can override its own from its card, and overrides travel into the 3MF.'),
+    );
 
     // Joint
+    const MATES = [
+      { value: 'dovetail', label: 'Dovetail — cut through the sheet' },
+      { value: 'puzzle', label: 'Puzzle — round head, flat print only' },
+      { value: 'snap', label: 'Snap boss — needs a 12 mm face' },
+      { value: 'none', label: 'None — plain glue seams' },
+    ];
+    const matePreview = el('div', { class: 'note', style: 'margin:2px 0 6px' }, '');
+    const describeMate = () => {
+      const t = { dovetail: 'A tab cut through the full thickness. Vertical walls printed flat, no supports, and nothing added to the model - the tab is material the other half gave up.',
+                  puzzle: 'Round head on a waist. Grips harder than a dovetail for the same width, but the undercut is a true overhang printed on edge.',
+                  snap: 'The EVF boss stamped on the cut face. Strongest option, but it needs about 12 mm of clear face and thin stock has none.',
+                  none: 'Every seam plain. Butt faces, glued.' }[state.mateType] || '';
+      matePreview.textContent = t;
+    };
+    const mateSel = select(MATES, state.mateType, (v) => { state.mateType = v; describeMate();
+      if (state.parts.length) say('Mating feature changed - re-run Auto Split to recut the seams.', false, 5000); });
+    describeMate();
+    jointsCard = el('div', { style: 'margin-top:9px' });
+    qualityCard = el('div', { style: 'margin-top:9px' });
     fitSliderCtl = steppedSlider(FIT_STOPS, state.fitIdx, (i) => {
       state.fitIdx = i;
       if (state.parts.length) say('Fit changed - re-run Auto Split to restamp the joints with the new clearances.', false, 5000);
     });
     const sMaxN = num(state.sMax, { min: 12, max: 40, unit: 'mm', onchange: (v) => state.sMax = Math.max(12, v) });
-    L.append(card('Joints',
+    const jointsSetCard = foldCard('Joints', false,
+      row('Mating feature', mateSel),
+      matePreview,
       rowInfo('Fit', 'Clearance between the halves. Standard is the design default; print the coupon and move one stop at a time if it binds or rattles.', el('span')),
       fitSliderCtl.wrap,
       row('Max size', ...sMaxN.nodes),
       el('div', { class: 'btnrow', style: 'margin-top:7px' },
         button('Print fit coupon', exportCoupon, 'g sm')),
-    ));
+      qualityCard,
+      jointsCard,
+    );
 
     // Manual cuts
-    cutsCard = card('Cuts', el('div', { class: 'empty' }, 'Optional. Turn on Place cuts, then click a face to add a cut in its plane, or a bore to cut square to it. Auto Split uses your cuts when any exist.'));
-    L.append(cutsCard);
+    cutsCard = foldCard('Cuts', false, el('div', { class: 'empty' }, 'Optional. Turn on Place cuts, then click a face to add a cut in its plane, or a bore to cut square to it. Auto Split uses your cuts when any exist.'));
     refreshCuts();
 
     // Actions
@@ -1146,20 +1195,26 @@ export async function boot({ workerSources, baseUrl }) {
         button('Auto Chamfer', autoChamfer, 'g'),
         button('Auto-Arrange', arrange, 'g')),
       el('div', { class: 'note' },
-        'Split cuts the model into printer-sized parts and stamps snap joints into every cut. Chamfer eases convex right angles. Arrange packs the parts onto plates.'),
+        'Split cuts the model into printer-sized parts and joints every seam it can. Chamfer eases convex right angles. Arrange packs the parts onto plates.'),
     );
-    L.append(actionsCard);
+
+    // The recorded order: what you DO, then how the joints behave, then how it
+    // prints, then which machine. Settings you touch once live at the bottom.
+    L.append(actionsCard, jointsSetCard, cutsCard, printCard, printerCard);
     refreshActions();
+    refreshJoints();
   }
 
   function refreshCuts() {
     if (!cutsCard) return;
-    cutsCard.innerHTML = '';
+    const cutsBody = cutsCard.body || cutsCard;
+    cutsBody.innerHTML = '';
     const toggle = button(state.cutMode ? 'Placing cuts — click the model' : 'Place cuts', () => {
       state.cutMode = !state.cutMode;
       refreshCuts();
     }, state.cutMode ? 'sm' : 'g sm');
-    cutsCard.append(el('div', { class: 'card-t' }, 'Cuts ', el('span', { class: 'n' }, state.manualPlanes.length || '')), toggle);
+    if (cutsCard.head) { const n = state.manualPlanes.length; cutsCard.head.firstChild.textContent = n ? `Cuts (${n})` : 'Cuts'; }
+    cutsBody.append(toggle);
     if (!state.manualPlanes.length) {
       cutsCard.append(el('div', { class: 'note' },
         'Optional. Click a face to add a cut in its plane, a bore to cut square to its axis. With no cuts placed, Auto Split chooses its own.'));
@@ -1177,7 +1232,7 @@ export async function boot({ workerSources, baseUrl }) {
         slider,
         button('×', () => removeManualPlane(entry), 'g sm')));
     });
-    cutsCard.append(el('div', { class: 'note' }, 'Sliders move each cut along its own normal.'));
+    cutsBody.append(el('div', { class: 'note' }, 'Sliders move each cut along its own normal.'));
   }
 
   function refreshActions() {
@@ -1211,19 +1266,231 @@ export async function boot({ workerSources, baseUrl }) {
   const fmtSize = (s) => s.map((v) => Math.round(v)).join(' × ');
 
   // ================================================================ UI: right
-  var partsList, selectedCard, exportCard, jointsCard;
-  function buildRightPanel() {
-    partsList = el('div', { class: 'plist' });
-    R.append(el('div', { class: 'card flush' },
-      el('div', { class: 'card-t', style: 'padding:11px 14px 0' }, 'Parts ',
-        el('span', { class: 'n', id: 'part-count' }, '')),
-      partsList));
-    jointsCard = card('Joints', el('div', { class: 'empty' }, 'Joints appear after a split.'));
-    R.append(jointsCard);
-    selectedCard = card('Selected part', el('div', { class: 'empty' }, 'Click a part to inspect it.'));
-    R.append(selectedCard);
-    exportCard = card('Export', el('div', { class: 'empty' }, 'Arrange first, then export.'));
-    R.append(exportCard);
+  var partsList, jointsCard, qualityCard;
+  /**
+   * The per-part card, which is the whole of the old right panel.
+   *
+   * Hover a part and it follows the pointer; click and it pins, so you can
+   * reach into it without the thing you are reading sliding away. Esc unpins.
+   * The build plate lives HERE and in Plates view - the main stage stays a CAD
+   * void, because a plate under an assembled model is scenery that tells you
+   * nothing about the model.
+   */
+  var partCard, pinnedPart = null, hoverPart = null;
+
+  var exportModal, exportBody, exportBtn;
+  function buildTopActions() {
+    const host = document.getElementById('pp');
+    exportBtn = button('Export', () => openExport(), 'sm');
+    exportBtn.disabled = true;
+    document.body.append(el('div', { class: 'top-actions' }, exportBtn));
+    exportBody = el('div');
+    exportModal = el('div', { class: 'modal-back' },
+      el('div', { class: 'modal' }, el('h3', {}, 'Export'), exportBody));
+    exportModal.addEventListener('click', (e) => { if (e.target === exportModal) closeExport(); });
+    document.body.append(exportModal);
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeExport(); });
+  }
+  function openExport() { refreshExport(); exportModal.classList.add('on'); }
+  function closeExport() { if (exportModal) exportModal.classList.remove('on'); }
+
+  function buildPartCard() {
+    partCard = el('div', { class: 'pcard' });
+    document.getElementById('stage').append(partCard);
+    partsList = el('div');          // kept so refreshParts has somewhere to write
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && pinnedPart) { pinnedPart = null; showPartCard(null); }
+    });
+  }
+
+  function movePartCard(clientX, clientY) {
+    if (!partCard || pinnedPart) return;
+    const st = document.getElementById('stage').getBoundingClientRect();
+    const w = 236, pad = 14;
+    let x = clientX - st.left + 18, y = clientY - st.top + 14;
+    if (x + w + pad > st.width) x = clientX - st.left - w - 18;
+    if (y + partCard.offsetHeight + pad > st.height) y = Math.max(pad, st.height - partCard.offsetHeight - pad);
+    partCard.style.left = Math.max(pad, x) + 'px';
+    partCard.style.top = Math.max(pad, y) + 'px';
+  }
+
+  /**
+   * A live 3D view of the part in its own little scene.
+   *
+   * A flat footprint rectangle told you how much plate it eats and nothing
+   * about what it IS - which is the one question you have while pointing at an
+   * unfamiliar lump. One renderer and one scene are reused for every card; the
+   * part's geometry is borrowed, never cloned, so hovering a 400k-triangle
+   * wheel part costs a camera move rather than a copy.
+   */
+  var pv = null;
+  function partPreview() {
+    if (pv) return pv;
+    const W = 210, H = 158;
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    // updateStyle TRUE: without it the canvas keeps its device-pixel attribute
+    // size as its CSS size, and on a 2x display the preview renders twice as
+    // tall as the card it sits in and spills across the stage.
+    renderer.setSize(W, H, true);
+    renderer.domElement.style.display = 'block';
+    renderer.domElement.style.cursor = 'grab';
+    renderer.domElement.style.touchAction = 'none';
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(30, W / H, 0.5, 100000);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa2a8, 2.2));
+    const key = new THREE.DirectionalLight(0xffffff, 1.4);
+    key.position.set(1, -1.4, 2);
+    scene.add(key);
+    const holder = new THREE.Group();        // spun by the drag
+    scene.add(holder);
+    const plate = new THREE.Group();          // build volume, for scale
+    const part = new THREE.Group();
+    holder.add(plate, part);
+    pv = { renderer, scene, camera, holder, plate, part, yaw: Math.PI / 5, pitch: -Math.PI / 2.6, radius: 1 };
+
+    // Drag to orbit, the same gesture as the main stage. The card only takes
+    // pointer events once pinned, so this is reachable exactly when the card is
+    // meant to be interactive.
+    let drag = null;
+    const cv = renderer.domElement;
+    cv.addEventListener('pointerdown', (e) => {
+      drag = [e.clientX, e.clientY]; cv.setPointerCapture(e.pointerId);
+      cv.style.cursor = 'grabbing'; e.stopPropagation();
+    });
+    cv.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      e.stopPropagation();
+      pv.yaw += (e.clientX - drag[0]) * 0.011;
+      pv.pitch += (e.clientY - drag[1]) * 0.011;
+      pv.pitch = Math.max(-Math.PI + 0.05, Math.min(-0.05, pv.pitch));
+      drag = [e.clientX, e.clientY];
+      drawPreview();
+    });
+    const stop = (e) => { if (drag) { drag = null; cv.style.cursor = 'grab'; e.stopPropagation(); } };
+    cv.addEventListener('pointerup', stop);
+    cv.addEventListener('pointercancel', stop);
+    cv.addEventListener('wheel', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      pv.radius *= e.deltaY > 0 ? 1.08 : 0.93;
+      pv.radius = Math.max(0.35, Math.min(3, pv.radius));
+      drawPreview();
+    }, { passive: false });
+    return pv;
+  }
+
+  function drawPreview() {
+    if (!pv || !pv.frame) return;
+    pv.holder.rotation.set(pv.pitch, 0, pv.yaw);
+    pv.camera.position.set(0, 0, pv.frame * pv.radius);
+    pv.camera.lookAt(0, 0, 0);
+    pv.renderer.render(pv.scene, pv.camera);
+  }
+
+  /**
+   * The part, in the build volume it has to print in.
+   *
+   * Showing the piece alone told you its shape and nothing about whether it is
+   * a thumbnail or fills the machine - and "will this print" is the question
+   * the card exists to answer. Drawing the plate around it makes the scale
+   * self-evident, and the same drag as the main stage lets you look under it.
+   */
+  function renderPartPreview(part) {
+    const v = partPreview();
+    v.part.clear(); v.plate.clear();
+    const src = part.mesh;
+    if (!src?.geometry) return v.renderer.domElement;
+
+    const bed = state.bed;
+    const half = [bed.x / 2, bed.y / 2, bed.z / 2];
+    // Build volume: a wire box on a faint floor, centred on the origin.
+    const box = new THREE.Box3(
+      new THREE.Vector3(-half[0], -half[1], 0), new THREE.Vector3(half[0], half[1], bed.z));
+    const wire = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(bed.x, bed.y, bed.z)),
+      new THREE.LineBasicMaterial({ color: 0x2d7cb5, transparent: true, opacity: 0.22 }));
+    wire.position.set(0, 0, bed.z / 2);
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(bed.x, bed.y),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5 }));
+    floor.position.set(0, 0, -0.2);
+    v.plate.add(floor, wire);
+
+    // The part, sitting on the plate in its chosen print pose.
+    const m = new THREE.Mesh(src.geometry, new THREE.MeshStandardMaterial({
+      color: part.color, roughness: 0.6, metalness: 0.04,
+    }));
+    const pb = new THREE.Box3().setFromBufferAttribute(src.geometry.attributes.position);
+    const c = pb.getCenter(new THREE.Vector3());
+    m.position.set(-c.x, -c.y, -pb.min.z);
+    v.part.add(m);
+
+    // Frame the whole build volume, so every part is drawn at the same scale
+    // and a small one looks small.
+    const r = new THREE.Vector3(bed.x, bed.y, bed.z).length() / 2;
+    v.frame = (r / Math.sin((30 * Math.PI / 180) / 2)) * 0.62;
+    // Centre the box vertically so the plate sits in the middle of the frame.
+    v.holder.position.set(0, 0, -bed.z / 2);
+    drawPreview();
+    return v.renderer.domElement;
+  }
+
+  function showPartCard(id, clientX, clientY) {
+    if (!partCard) return;
+    const part = id && state.parts.find((p) => p.id === id);
+    if (!part) { partCard.classList.remove('on', 'pin'); hoverPart = null; return; }
+    hoverPart = id;
+    const o = part.orientation;
+    const sz = part.summary?.size;
+    const bed = [state.bed.x, state.bed.y, state.bed.z].sort((a, b) => a - b);
+    const fits = sz && sz.slice().sort((a, b) => a - b).every((d, i) => d <= bed[i] + 1e-6);
+    const mySeams = (state.seams || []).filter((sm) => sm.aPartId === part.id || sm.bPartId === part.id);
+    const jointed = mySeams.filter((sm) => sm.placement).length;
+    const rows = [
+      ['Size', sz ? fmtSize(sz) : '-'],
+      ['Volume', part.volume ? `${(part.volume / 1000).toFixed(1)} cm3` : '-'],
+      ['Triangles', part.summary ? String(part.summary.triCount) : '-'],
+      ['Fits plate', fits ? 'yes' : 'NO'],
+    ];
+    if (o) {
+      rows.push(['Best up', o.up.map((v) => (Math.abs(v) < 1e-6 ? 0 : +v.toFixed(2))).join(', ')]);
+      rows.push(['Support', o.needsSupport ? `${o.unsupportedMm2.toFixed(0)} mm2` : 'none']);
+    }
+    rows.push(['Seams', mySeams.length ? `${jointed} of ${mySeams.length} jointed` : 'none']);
+
+    partCard.innerHTML = '';
+    partCard.append(
+      el('div', { class: 'pc-h' },
+        el('span', { class: 'sw', style: `background:#${part.color.toString(16).padStart(6, '0')}` }),
+        el('span', { class: 'nm' }, part.name),
+        el('span', { class: 'pin-b' }, pinnedPart === id ? 'pinned · esc' : '')),
+      ...rows.map(([k, v]) => el('div', { class: 'pc-r' }, el('span', {}, k), el('span', {}, v))),
+    );
+    const shot = renderPartPreview(part);
+    if (shot) partCard.append(el('div', { class: 'pc-plate' }, shot));
+    if (mySeams.length) {
+      const sec = el('div', { class: 'pc-sec' });
+      for (const sm of mySeams.slice(0, 6)) {
+        const other = state.parts.find((q) => q.id === (sm.aPartId === part.id ? sm.bPartId : sm.aPartId));
+        sec.append(el('div', { class: 'pc-r' },
+          el('span', {}, other?.name ?? 'seam'),
+          el('span', {}, sm.placement
+            ? (sm.placement.profiled ? `${sm.placement.grip.toFixed(1)} mm grip` : `${sm.placement.S} mm snap`)
+            : 'glue')));
+      }
+      partCard.append(sec);
+    }
+    if (pinnedPart === id) {
+      // Never let a card section take the whole card down with it: the pin
+      // state is applied below, and a throw here used to skip it, leaving a
+      // card that says "pinned" and is not.
+      try {
+        const orow = orientationRows(part);
+        if (orow) partCard.append(orow);
+      } catch (e) { console.error('orientation rows', e); }
+    }
+    partCard.classList.add('on');
+    partCard.classList.toggle('pin', pinnedPart === id);
+    if (clientX != null) movePartCard(clientX, clientY);
   }
 
   function refreshParts() {
@@ -1250,15 +1517,112 @@ export async function boot({ workerSources, baseUrl }) {
     refreshJoints();
   }
 
+  /**
+   * How good is this split, in the two terms that actually matter?
+   *
+   * STRENGTH is about where the seams landed. A seam is only as good as the
+   * joint it can hold, and a joint is only as good as the face it is cut in -
+   * so the honest measure is how much of the total seam area is jointed rather
+   * than glued, and how much grip those joints have. A split that cuts a model
+   * into printable pieces through its thinnest, most awkward sections is a
+   * worse split than one that takes the same pieces through fat material, even
+   * though both "work".
+   *
+   * SIMPLICITY is about what you then have to print. Fewer distinct shapes
+   * beats fewer parts - eight copies of one bracket is a simpler print job
+   * than five different ones - and parts should be as big as the bed allows,
+   * because every extra part is another seam to glue and another chance to
+   * mis-assemble. Plate use says whether the pieces are near that ceiling or
+   * timidly small.
+   */
+  function splitQuality() {
+    const parts = state.parts, seams = state.seams || [];
+    if (!parts.length) return null;
+    const bed = state.bed;
+    const bedVol = bed.x * bed.y * bed.z;
+
+    // --- simplicity
+    const sig = (p) => {
+      const d = p.summary.size.slice().sort((a, b) => a - b).map((v) => v.toFixed(1));
+      return `${(p.volume / 100).toFixed(0)}|${d.join('x')}`;
+    };
+    const shapes = new Map();
+    for (const p of parts) shapes.set(sig(p), (shapes.get(sig(p)) || 0) + 1);
+    const distinct = shapes.size;
+    const biggest = Math.max(...parts.map((p) => p.summary.size[0] * p.summary.size[1] * p.summary.size[2]));
+    const plateUse = Math.min(1, biggest / bedVol);
+    const reuse = 1 - (distinct - 1) / Math.max(1, parts.length - 1);   // 1 = all identical
+
+    // --- strength
+    const faceArea = (sm) => {
+      const a = sm.a?.bbox, b = sm.b?.bbox, n = sm.plane.n;
+      if (!a) return 0;
+      let area = 1;
+      for (let k = 0; k < 3; k++) {
+        if (Math.abs(n[k]) > 0.5) continue;
+        const lo = Math.max(a.min[k], b.min[k]), hi = Math.min(a.max[k], b.max[k]);
+        area *= Math.max(0, hi - lo);
+      }
+      return area;
+    };
+    // A stamped snap and a profiled tab are not measured in the same units - one
+    // is a joint SIZE on a face big enough to host it, the other is millimetres
+    // of undercut. Averaging them gave "mean grip 25.0 mm" for a 25 mm boss,
+    // which reads as a joint six times stronger than any tab can be. Score each
+    // on its own terms: a stamped joint only exists at all when the face can
+    // carry it, so it is full marks; a tab is graded on its undercut, where
+    // 3 mm is one you can feel.
+    let total = 0, jointedArea = 0, qualSum = 0, gripSum = 0, gripArea = 0;
+    for (const sm of seams) {
+      const A = faceArea(sm);
+      total += A;
+      if (!sm.placement) continue;
+      jointedArea += A;
+      if (sm.placement.profiled) {
+        qualSum += Math.min(1, sm.placement.grip / 3) * A;
+        gripSum += sm.placement.grip * A; gripArea += A;
+      } else {
+        qualSum += A;
+      }
+    }
+    const jointedFrac = total ? jointedArea / total : 0;
+    const meanGrip = gripArea ? gripSum / gripArea : null;
+    const strength = total ? qualSum / total : 0;
+
+    return {
+      parts: parts.length, distinct, reuse, plateUse, jointedFrac, meanGrip,
+      seams: seams.length, jointed: seams.filter((sm) => sm.placement).length,
+      strengthPct: Math.round(strength * 100),
+      simplicityPct: Math.round((0.6 * reuse + 0.4 * plateUse) * 100),
+    };
+  }
+
+  function refreshQuality() {
+    if (!qualityCard) return;
+    qualityCard.innerHTML = '';
+    const q = splitQuality();
+    if (!q) return;
+    const bar = (label, pct, hint) => el('div', { style: 'margin-top:6px' },
+      el('div', { class: 'pc-r' }, el('span', {}, label), el('span', {}, `${pct}%`)),
+      el('div', { style: 'height:4px;border-radius:3px;background:rgba(0,0,0,.08);overflow:hidden;margin-top:2px' },
+        el('div', { style: `height:100%;width:${pct}%;background:${pct >= 66 ? '#4d9e5f' : pct >= 33 ? '#c9a227' : '#c0392b'}` })),
+      el('div', { class: 'note', style: 'margin-top:3px' }, hint));
+    qualityCard.append(
+      el('div', { class: 'card-t', style: 'margin-top:2px' }, 'Split quality'),
+      bar('Strength', q.strengthPct,
+        `${q.jointed} of ${q.seams} seams jointed, ${Math.round(q.jointedFrac * 100)}% of seam area`
+        + (q.meanGrip != null ? `, mean undercut ${q.meanGrip.toFixed(2)} mm.` : '.')),
+      bar('Simplicity', q.simplicityPct,
+        `${q.parts} parts of ${q.distinct} distinct shape${q.distinct === 1 ? '' : 's'}; largest fills ${Math.round(q.plateUse * 100)}% of the build volume.`));
+  }
+
   function refreshJoints() {
+    if (!jointsCard) return;
     jointsCard.innerHTML = '';
     const seamCount = (state.seams || []).length;
-    jointsCard.append(el('div', { class: 'card-t' }, 'Joints ',
-      el('span', { class: 'n' }, seamCount ? `${state.joints.length}/${seamCount} seams` : '')));
-    if (!state.joints.length && !seamCount) {
-      jointsCard.append(el('div', { class: 'empty' }, 'Joints appear after a split.'));
-      return;
-    }
+    if (!state.joints.length && !seamCount) return;
+    jointsCard.append(el('div', { class: 'card-t', style: 'margin-top:2px' }, 'Seams ',
+      el('span', { class: 'n' }, `${state.joints.length}/${seamCount}`)));
     for (const j of state.joints) {
       const a = state.parts.find((p) => p.id === j.aPartId), b = state.parts.find((p) => p.id === j.bPartId);
       const male = j.maleOn === 'A' ? a : b;
@@ -1322,82 +1686,55 @@ export async function boot({ workerSources, baseUrl }) {
   }
 
   function selectPart(id) {
+    pinnedPart = pinnedPart === id ? null : id;
+    showPartCard(pinnedPart || id);
     state.selected = state.selected === id ? null : id;
     refreshParts();
     refreshSelected();
   }
 
+  /**
+   * The pinned part's card is where "selected part" lives now. Keeping the old
+   * name means every caller that used to poke the right panel still works.
+   */
   function refreshSelected() {
-    selectedCard.innerHTML = '';
-    selectedCard.append(el('div', { class: 'card-t' }, 'Selected part'));
-    const part = state.parts.find((p) => p.id === state.selected);
-    if (!part) {
-      selectedCard.append(el('div', { class: 'empty' }, 'Click a part to inspect it.'));
-      return;
-    }
-    const o = part.orientation;
-    selectedCard.append(
-      el('div', { class: 'stats' },
-        stat('Size', fmtSize(part.summary.size), 'mm'),
-        stat('Tris', part.summary.triCount.toLocaleString())),
-      el('hr'));
-
-    // Orientation candidates: the print poses, best first.
-    selectedCard.append(el('div', { class: 'card-t' }, 'Print orientation'));
-    if (!part.orientCands.length) {
-      selectedCard.append(el('div', { class: 'empty' }, 'No ranked orientations.'));
-    } else {
-      for (const [i, cand] of part.orientCands.entries()) {
-        const chosen = o === cand;
-        const b = el('div', { class: 'row', style: 'cursor:pointer;min-height:24px' + (chosen ? ';color:#2d7cb5' : '') },
-          el('span', { class: 'lbl w', style: chosen ? 'color:#2d7cb5;font-weight:700' : '' }, chosen ? '● ' + ordinal(i) : ordinal(i)),
-          el('span', { style: 'flex:1;font-size:10px' },
-            `${cand.unsupportedMm2 <= 4 ? 'no supports' : `${Math.round(cand.unsupportedMm2)} mm² unsupported`} · h ${cand.height} mm`),
-          cand.needsSupport ? el('span', { class: 'warn' }, '▲') : null);
-        b.addEventListener('click', () => {
-          part.orientation = cand;
-          state.plates = [];        // the arrangement is stale now
-          refreshSelected(); refreshParts(); refreshExport();
-        });
-        selectedCard.append(b);
-      }
-      selectedCard.append(el('div', { class: 'note' },
-        'Ranked for dimensional accuracy, layer strength across the joints, and printing every joint face without support.'));
-    }
-
-    // Per-part overrides.
-    selectedCard.append(el('hr'), el('div', { class: 'card-t' }, 'Overrides',
-      el('span', { class: 'n' }, part.proc ? 'custom' : 'inherits global')));
-    const eff = effectiveProc(part);
-    const mark = () => { part.proc = part.proc || {}; };
-    const layerSel = select(QUALITIES.map((q) => ({ value: String(q.h), label: `${q.h.toFixed(2)} mm` })),
-      String(eff.layerHeight), (v) => { mark(); part.proc.layerHeight = Number(v); refreshSelected(); });
-    const walls = num(eff.wallLoops, { min: 1, max: 8, onchange: (v) => { mark(); part.proc.wallLoops = v; } });
-    const infill = num(eff.infillPct, { min: 0, max: 100, unit: '%', onchange: (v) => { mark(); part.proc.infillPct = v; } });
-    const patSel = select(INFILL_PATTERNS.map((p) => ({ value: p, label: p })), eff.infillPattern,
-      (v) => { mark(); part.proc.infillPattern = v; });
-    selectedCard.append(
-      row('Layer', layerSel),
-      row('Walls', ...walls.nodes),
-      row('Infill', ...infill.nodes),
-      row('Pattern', patSel),
-      checkbox('Supports for this part', eff.supports, (v) => { mark(); part.proc.supports = v; }),
-      el('div', { class: 'btnrow', style: 'margin-top:6px' },
-        button('Reset to global', () => { part.proc = null; refreshSelected(); }, 'g sm')),
-      el('div', { class: 'note' }, 'Overrides ride into the 3MF as per-object settings, so the slicer applies them to this part only. Parts with different layer heights or materials get separate plates.'),
-    );
+    const id = pinnedPart || state.selected;
+    if (id && state.parts.some((p) => p.id === id)) showPartCard(id);
+    else if (partCard) partCard.classList.remove('on', 'pin');
   }
+
   const ordinal = (i) => ['Best', '2nd', '3rd', '4th', '5th'][i] || `${i + 1}th`;
 
+  /** Print-pose chooser, appended to the part card when it is pinned. */
+  function orientationRows(part) {
+    if (!part.orientCands?.length) return null;
+    const box = el('div', { class: 'pc-sec' },
+      el('div', { class: 'card-t', style: 'margin-bottom:5px' }, 'Print orientation'));
+    for (const [i, cand] of part.orientCands.entries()) {
+      const chosen = part.orientation === cand;
+      const r = el('div', { class: 'pc-r', style: 'cursor:pointer' + (chosen ? ';color:#2d7cb5' : '') },
+        el('span', { style: chosen ? 'color:#2d7cb5;font-weight:700' : '' }, (chosen ? '\u25cf ' : '') + ordinal(i)),
+        el('span', {}, `${cand.unsupportedMm2 <= 4 ? 'no supports' : `${Math.round(cand.unsupportedMm2)} mm\u00b2`} \u00b7 h ${cand.height}`));
+      r.addEventListener('click', (e) => {
+        e.stopPropagation();
+        part.orientation = cand;
+        state.plates = [];               // the arrangement is stale now
+        showPartCard(part.id); refreshParts(); refreshExport();
+      });
+      box.append(r);
+    }
+    return box;
+  }
   function refreshExport() {
-    exportCard.innerHTML = '';
-    exportCard.append(el('div', { class: 'card-t' }, 'Export'));
+    if (!exportBody) return;
+    exportBody.innerHTML = '';
+    if (exportBtn) exportBtn.disabled = !state.parts.length;
     if (!state.plates.length) {
-      exportCard.append(el('div', { class: 'empty' }, 'Arrange first, then export.'));
+      exportBody.append(el('div', { class: 'empty' }, 'Arrange first, then export.'));
       return;
     }
     const sel = { plate3mf: true, plateStl: false, partStls: false, zip: state.plates.length > 1 };
-    exportCard.append(
+    exportBody.append(
       checkbox(`Plate project${state.plates.length > 1 ? 's' : ''} (.3mf) — opens in ElegooSlicer with settings applied`, sel.plate3mf, (v) => sel.plate3mf = v),
       checkbox('Merged plate STLs', sel.plateStl, (v) => sel.plateStl = v),
       checkbox('Individual part STLs', sel.partStls, (v) => sel.partStls = v),
@@ -1481,6 +1818,25 @@ export async function boot({ workerSources, baseUrl }) {
   // A click is a click only if the pointer barely moved - otherwise it was an
   // orbit drag and placing a cut mid-orbit would drive anyone mad.
   let downAt = null;
+  function pickPart(e) {
+    if (!state.parts.length) return null;
+    const rect = stage.renderer.domElement.getBoundingClientRect();
+    pointer.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+    raycaster.setFromCamera(pointer, stage.camera);
+    const meshes = state.parts.map((p) => p.mesh).filter((m) => m.visible);
+    const hits = raycaster.intersectObjects(meshes, false);
+    if (!hits.length) return null;
+    return state.parts.find((p) => p.mesh === hits[0].object)?.id ?? null;
+  }
+
+  stage.renderer.domElement.addEventListener('pointermove', (e) => {
+    if (pinnedPart) return;
+    const hit = pickPart(e);
+    if (hit !== hoverPart) showPartCard(hit, e.clientX, e.clientY);
+    else if (hit) movePartCard(e.clientX, e.clientY);
+  });
+  stage.renderer.domElement.addEventListener('pointerleave', () => { if (!pinnedPart) showPartCard(null); });
+
   stage.renderer.domElement.addEventListener('pointerdown', (e) => {
     if (e.button === 0) downAt = [e.clientX, e.clientY];
   });
@@ -1592,5 +1948,6 @@ export async function boot({ workerSources, baseUrl }) {
 
   // A named handle for tests and for poking at the tool from the console. It
   // lives behind the gate, so it exposes nothing the page does not already hold.
-  window.__pp = { state, geom, csg, stage, autoSplit, symmetricSplit, arrange, addManualPlane };
+  window.__pp = { state, geom, csg, stage, autoSplit, symmetricSplit, arrange, addManualPlane, importSTL, setView, openExport,
+    get pinned() { return pinnedPart; }, showPartCard, splitQuality };
 }

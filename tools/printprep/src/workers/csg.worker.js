@@ -25,7 +25,7 @@ serve({
     try {
       const r = solidFromMesh(soupToMesh(positions), { diag });
       arena.retain(r.id);
-      return { solidId: r.id, volume: r.volume, genus: r.genus, weldedAt: r.tolerance };
+      return { solidId: r.id, volume: r.volume, genus: r.genus, weldedAt: r.tolerance, flipped: r.flipped };
     } finally { arena.endScope(); }
   },
 

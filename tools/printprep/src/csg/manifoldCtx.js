@@ -51,10 +51,31 @@ export function solidFromMesh({ vertProperties, triVerts, numProp = 3 }, { diag 
     if (attempts[i] > 0) mesh.tolerance = attempts[i];
     if (i > 0) mesh.merge();
     try {
-      const m = new Manifold(mesh);
+      let m = new Manifold(mesh);
       const status = m.status();
       if (status === 'NoError' && !m.isEmpty()) {
-        return { id: track(m), tolerance: attempts[i], volume: m.volume(), genus: m.genus() };
+        // An inside-out solid is closed and consistently wound - just wound the
+        // wrong way round, which Manifold reports as a NEGATIVE volume and is
+        // otherwise perfectly happy to boolean with. Two of this repo's own five
+        // sample models are like this (fork-bracket-300 at -3,480,000 mm3 and
+        // bracket-300 at -3,444,000), and the tool imported both without a word
+        // and then reported their parts' volumes as negative. Worse, every
+        // volume-based check downstream - "did the joint add material?" among
+        // them - reads backwards on an inverted solid. Flip it once, here.
+        let flipped = false;
+        if (m.volume() < 0) {
+          const rev = new Uint32Array(triVerts.length);
+          for (let t = 0; t < triVerts.length; t += 3) {
+            rev[t] = triVerts[t + 2]; rev[t + 1] = triVerts[t + 1]; rev[t + 2] = triVerts[t];
+          }
+          const fixMesh = new Mesh({ numProp, vertProperties, triVerts: rev });
+          if (attempts[i] > 0) { fixMesh.tolerance = attempts[i]; fixMesh.merge(); }
+          const fm = new Manifold(fixMesh);
+          if (fm.status() === 'NoError' && !fm.isEmpty() && fm.volume() > 0) {
+            m.delete(); m = fm; flipped = true;
+          } else { fm.delete(); }
+        }
+        return { id: track(m), tolerance: attempts[i], volume: m.volume(), genus: m.genus(), flipped };
       }
       lastErr = status;
       m.delete();

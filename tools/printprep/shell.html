@@ -63,7 +63,7 @@ h1,h2,h3{font-family:Verdana,Geneva,sans-serif;font-weight:400}
 .pane-l{border-right:1px solid rgba(45,124,181,0.12)}
 .pane-r{border-left:1px solid rgba(45,124,181,0.12)}
 #stage{position:relative;background:#eeeee8;min-width:0}
-#stage canvas{display:block;width:100%;height:100%}
+#stage > canvas{display:block;width:100%;height:100%}
 
 /* ---------------------------------------------------------------- controls, after the index.html configurator */
 .card{background:rgba(255,255,255,0.62);border:1px solid rgba(0,0,0,0.06);border-radius:10px;padding:11px 14px;position:relative}
@@ -170,6 +170,45 @@ input:focus,select:focus{outline:none;border-color:rgba(45,124,181,0.4)}
 .note.warn{color:#b5432d}
 hr{border:none;border-top:1px solid rgba(0,0,0,0.07);margin:9px 0}
 @media(max-width:1100px){#pp{grid-template-columns:230px 1fr 250px}}
+
+/* ---------------------------------------------------------------- rebuilt UI */
+#pp{grid-template-columns:272px 1fr}
+.pane-r{display:none}
+/* Collapsible cards. The rail is long, so everything but Actions folds away. */
+.card-t.fold{cursor:pointer;user-select:none}
+.card-t .chev{font-size:9px;color:rgba(0,0,0,.3);transition:transform .18s;margin-left:auto}
+.card.shut .chev{transform:rotate(-90deg)}
+.card.shut > *:not(.card-t){display:none !important}
+.card.shut .card-t{margin-bottom:0}
+/* The stage is a CAD void: the build plate belongs to Plates view and the part
+   card, not to the place you inspect the assembled model. */
+#stage.void{background:#eeeee8}
+/* Per-part card. Follows the pointer while hovering, sits still once pinned. */
+.pcard{position:absolute;z-index:40;width:236px;pointer-events:none;opacity:0;transform:translateY(4px);
+       transition:opacity .12s,transform .12s;background:rgba(255,255,255,.94);backdrop-filter:blur(14px);
+       border:1px solid rgba(0,0,0,.08);border-radius:11px;padding:11px 13px;
+       box-shadow:0 8px 28px rgba(0,0,0,.13)}
+.pcard.on{opacity:1;transform:translateY(0)}
+.pcard.pin{pointer-events:auto;border-color:rgba(45,124,181,.45);box-shadow:0 10px 34px rgba(45,124,181,.22)}
+.pcard .pc-h{display:flex;align-items:center;gap:7px;margin-bottom:7px}
+.pcard .pc-h .sw{width:11px;height:11px;border-radius:3px;flex-shrink:0}
+.pcard .pc-h .nm{font-size:12px;font-weight:600;letter-spacing:.2px}
+.pcard .pc-h .pin-b{margin-left:auto;font-size:8.5px;letter-spacing:1px;text-transform:uppercase;color:rgba(0,0,0,.3)}
+.pc-r{display:flex;justify-content:space-between;gap:8px;font-size:10.5px;padding:1.5px 0}
+.pc-r span:first-child{color:rgba(0,0,0,.45)}
+.pc-r span:last-child{color:rgba(0,0,0,.78);font-variant-numeric:tabular-nums}
+.pcard .pc-sec{margin-top:8px;padding-top:7px;border-top:1px solid rgba(0,0,0,.07)}
+.pcard .pc-plate{margin-top:8px;border-radius:7px;overflow:hidden;border:1px solid rgba(0,0,0,.08);background:#eeeee8}
+.pcard .pc-plate svg{display:block;width:100%}
+.pcard .pc-plate canvas{position:static;inset:auto;display:block;margin:0 auto}
+/* Top-bar export */
+.top-actions{position:fixed;right:130px;top:0;height:48px;display:flex;align-items:center;gap:9px;z-index:30}
+.modal-back{position:fixed;inset:0;background:rgba(20,22,24,.34);backdrop-filter:blur(3px);z-index:100;
+            display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .16s}
+.modal-back.on{opacity:1;pointer-events:auto}
+.modal{width:390px;max-width:92vw;max-height:82vh;overflow-y:auto;background:#fbfbf9;border-radius:14px;
+       padding:20px 22px;box-shadow:0 24px 70px rgba(0,0,0,.3)}
+.modal h3{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.6px;color:#2d7cb5;margin:0 0 12px}
 </style>
 </head>
 <body>
@@ -200,7 +239,7 @@ hr{border:none;border-top:1px solid rgba(0,0,0,0.07);margin:9px 0}
 <div id="pp">
   <div class="pane pane-l" id="pane-l"></div>
   <div id="stage"><div class="prog" id="prog"><i></i></div></div>
-  <div class="pane pane-r" id="pane-r"></div>
+  <div class="pane pane-r" id="pane-r" hidden></div>
 </div>
 
 <script>
