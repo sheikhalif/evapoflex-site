@@ -299,11 +299,27 @@ export async function boot({ workerSources, baseUrl }) {
     const step = 2 * Math.PI / sectors;
     const planes = [];
 
-    const half = sectors % 2 === 0 ? sectors / 2 : sectors;
-    for (let k = 0; k < half; k++) {
+    // ONE CUT PER RAY, not one per diameter.
+    //
+    // A plane through the axis covers two opposite rays at once, so sector k
+    // and sector k+8 end up on OPPOSITE sides of the same plane - and the tab
+    // always rides on one side, so they get opposite joint genders. That is
+    // why the sectors came out in identical PAIRS rather than all alike: each
+    // was a mirror of its opposite, carrying a socket where the other carried
+    // a tab.
+    //
+    // Masking each cut to the half-disc containing its own ray makes the cut
+    // local, so every sector ends up with a tab on one edge and a socket on
+    // the other - the same handedness the whole way round, which is what makes
+    // them interchangeable.
+    for (let k = 0; k < sectors; k++) {
       const t = sym.phaseRad + k * step;
       const n = [-Math.sin(t), Math.cos(t), 0];
-      planes.push({ n, d: n[0] * c[0] + n[1] * c[1] });
+      const ray = [Math.cos(t), Math.sin(t), 0];
+      planes.push({
+        n, d: n[0] * c[0] + n[1] * c[1],
+        only: [{ n: ray, d: ray[0] * c[0] + ray[1] * c[1] }],
+      });
     }
 
     // Ring cuts belong to ONE sector each.
