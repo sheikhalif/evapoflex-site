@@ -333,7 +333,17 @@ export async function boot({ workerSources, baseUrl }) {
    * soup and never sees the solid, so which rails a seam crosses - and how wide
    * each one is - is not knowable until the real parent is in hand.
    */
-  const SEAM_MIN_FACE = 12;              // mm, matches placeJoints' own sMin
+  // How thick stock has to be before a STAMPED joint can sit on its cut face.
+  //
+  // A square boss of side S needs S/sqrt(2) + margin of clearance from the
+  // face's edge all round, so a face only t thick can host the smallest useful
+  // 12 mm joint when t >= 2*(12/sqrt(2) + margin) - about 20 mm. This is the
+  // same test geom.plan makes before reserving protrusion, and the two have to
+  // agree or there is a band where each assumes the other will handle it.
+  // Measured in that band: a 12 mm lattice of 24 mm bars got NO joint at all -
+  // profiled declined because 12 is not under 12, stamped declined because 12
+  // is nowhere near 20 - on seams that comfortably take a 5.4 mm dovetail.
+  const stampedNeeds = () => 2 * (12 / Math.SQRT2 + Math.max(1.5, 2 * (printer().nozzle ?? 0.4)));
   async function profiledCut(parentId, pl, idx, profiled) {
     if (state.mateType === 'none' || state.mateType === 'snap') {
       profiled.set(idx, { used: false, why: state.mateType === 'none' ? 'mating feature set to none' : 'stamped snap boss chosen' });
@@ -341,8 +351,8 @@ export async function boot({ workerSources, baseUrl }) {
     }
     const sec = await csg.call('csg.seamSection', { solidId: parentId, plane: pl });
     if (!sec.lumps.length) return null;
-    if (sec.thickness >= SEAM_MIN_FACE) {
-      profiled.set(idx, { used: false, why: `${sec.thickness.toFixed(1)} mm stock takes a stamped joint` });
+    if (sec.thickness >= stampedNeeds()) {
+      profiled.set(idx, { used: false, why: `${sec.thickness.toFixed(1)} mm stock can take a stamped joint` });
       return null;
     }
     // NO BOSS. A joint may only redistribute material across the face it is cut

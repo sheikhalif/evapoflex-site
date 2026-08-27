@@ -214,32 +214,26 @@ serve({
         return c;
       };
 
-      // Match the caller's tabs to the lumps one for one. Both directions are
-      // checked: a lump with no tab would be butt-cut in silence, and a tab in
-      // no lump would weld a floating island of pad into the model - measured
-      // on two rails at x=+-20 with `at` left to default to the bbox midpoint,
-      // which produced exactly that at x=-9..9, touching no material, and
-      // decompose duly turned it into a part that would orient, pack and print.
+      // Match the caller's tabs to the lumps BY INDEX.
+      //
+      // Matching by position looks natural and is wrong: lumps are disjoint in
+      // space but not necessarily in their projection along the seam. Cut a
+      // lattice along one of its own bars and the section holds five short
+      // rungs plus that bar, running the full width and overlapping every one
+      // of them - so "which lump is this tab in" had six answers and the cut
+      // was refused on geometry it could have jointed. seamSection returns
+      // lumps in a defined order, so the honest contract is that the caller
+      // hands back one tab per lump in that same order.
       const asked = stock.tabs
         ?? (lumps.length === 1 ? [{ at: stock.at ?? lumps[0].at, width: stock.width }] : null);
       if (!asked) {
         throw new Error(`the seam crosses ${lumps.length} separate lumps - pass stock.tabs with one entry `
-          + `per lump (centres ${lumps.map((l) => l.at.toFixed(1)).join(', ')})`);
+          + `per lump, in seamSection order (centres ${lumps.map((l) => l.at.toFixed(1)).join(', ')})`);
       }
-      const paired = lumps.map((lump) => {
-        const hits = asked.filter((t) => Number(t.at) >= lump.uLo - 1e-6 && Number(t.at) <= lump.uHi + 1e-6);
-        if (hits.length !== 1) {
-          throw new Error(hits.length === 0
-            ? `no tab given for the material at ${lump.uLo.toFixed(1)}..${lump.uHi.toFixed(1)} - `
-              + 'name every lump, a seam is never left half jointed'
-            : `${hits.length} tabs fall inside ${lump.uLo.toFixed(1)}..${lump.uHi.toFixed(1)} - one tab per lump`);
-        }
-        return { lump, ask: hits[0] };
-      });
-      const orphan = asked.find((t) => !paired.some((pr) => pr.ask === t));
-      if (orphan) {
-        throw new Error(`the tab at ${Number(orphan.at).toFixed(1)} is not inside any material at the seam`);
+      if (asked.length !== lumps.length) {
+        throw new Error(`${asked.length} tabs for ${lumps.length} lumps - a seam is never left half jointed`);
       }
+      const paired = lumps.map((lump, i) => ({ lump, ask: asked[i] }));
 
       // Resolve each lump's joint. A rail too thin to hold one is reported as
       // plain WITH the reason rather than throwing - that is the same bargain
@@ -264,7 +258,7 @@ serve({
       };
 
       const tabs = paired.map(({ lump, ask }) => {
-        const at = Number(ask.at);
+        const at = Number(ask.at ?? lump.at);
         const width = Number(ask.width ?? lump.width);
         if (!Number.isFinite(at) || !Number.isFinite(width) || width <= 0) {
           throw new Error(`a tab needs a finite at and a positive width, got at=${ask.at} width=${ask.width}`);
