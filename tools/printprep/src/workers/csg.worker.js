@@ -174,7 +174,45 @@ serve({
     const fr = seamFrame(plane);
     arena.beginScope();
     try {
-      const m = arena.M(solidId);
+      // WHICH DIMENSION THE JOINT GETS TO USE.
+      //
+      // The profile is cut in the plane of the sheet and extruded through its
+      // thickness, so the undercut is limited by the rail's WIDTH. On the EEDX
+      // frame that is 6 mm against a 10 mm thickness - the joint is working in
+      // the smaller of the two dimensions it has.
+      //
+      // `across: 'thickness'` rolls the solid a quarter turn about the seam
+      // normal before cutting and rolls it back after. The seam is unmoved (it
+      // is the rotation axis), but width and thickness swap, so the same
+      // profile now takes its undercut from the 10 mm and extrudes through the
+      // 6 mm. Everything downstream is identical; only which dimension is
+      // spent on engagement changes.
+      const roll = opts?.across === 'thickness';
+      let rolled = null, rollBack = null;
+      if (roll) {
+        const n = fr.n;
+        const c = Math.cos(Math.PI / 2), sn = Math.sin(Math.PI / 2);
+        const K = [[0, -n[2], n[1]], [n[2], 0, -n[0]], [-n[1], n[0], 0]];
+        const R = [0, 1, 2].map((i) => [0, 1, 2].map((j) =>
+          (i === j ? 1 : 0) + sn * K[i][j] + (1 - c) * (K[i][0] * K[0][j] + K[i][1] * K[1][j] + K[i][2] * K[2][j])));
+        // Column-major 4x3 for Manifold.transform, about the seam's own point.
+        const o = [fr.n[0] * fr.d, fr.n[1] * fr.d, 0];
+        const mat = [
+          R[0][0], R[1][0], R[2][0], R[0][1], R[1][1], R[2][1], R[0][2], R[1][2], R[2][2],
+          o[0] - (R[0][0] * o[0] + R[0][1] * o[1] + R[0][2] * o[2]),
+          o[1] - (R[1][0] * o[0] + R[1][1] * o[1] + R[1][2] * o[2]),
+          o[2] - (R[2][0] * o[0] + R[2][1] * o[1] + R[2][2] * o[2]),
+        ];
+        const inv = [
+          R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2],
+          o[0] - (R[0][0] * o[0] + R[1][0] * o[1] + R[2][0] * o[2]),
+          o[1] - (R[0][1] * o[0] + R[1][1] * o[1] + R[2][1] * o[2]),
+          o[2] - (R[0][2] * o[0] + R[1][2] * o[1] + R[2][2] * o[2]),
+        ];
+        rolled = forceEval(arena.M(solidId).transform(mat));
+        rollBack = inv;
+      }
+      const m = rolled || arena.M(solidId);
       const bb = m.boundingBox();
       const T = bb.max[2] - bb.min[2];
       const uMid = (bb.min[0] + bb.max[0]) / 2 * fr.u[0] + (bb.min[1] + bb.max[1]) / 2 * fr.u[1];
@@ -426,7 +464,13 @@ serve({
       // frame now carries the normal's own direction rather than folding its
       // sign into an axis index, so this needs no case analysis: the tab always
       // rides on the other half.
-      const [A, B] = [hi, lo];
+      let [A, B] = [hi, lo];
+      if (rollBack) {
+        const ra = forceEval(A.transform(rollBack)), rb = forceEval(B.transform(rollBack));
+        A.delete(); B.delete();
+        A = ra; B = rb;
+      }
+      if (rolled) rolled.delete();
       const aId = arena.retain(arena.track(A));
       const bId = arena.retain(arena.track(B));
       arena.release(solidId);

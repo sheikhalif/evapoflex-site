@@ -289,9 +289,20 @@ serve({
       const dx = tri[i] - cx, dy = tri[i + 1] - cy;
       const r = Math.hypot(dx, dy);
       if (r > rMax) rMax = r;
-      let b = Math.floor((Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI) * BINS);
-      if (b < 0) b = 0; else if (b >= BINS) b = BINS - 1;
-      hist[b] += tri[i + 2];
+      // Splat across the two nearest bins by fractional position, rather than
+      // dropping the whole triangle into one.
+      //
+      // Hard binning quantises, and quantisation is not rotation-invariant: a
+      // centroid sitting near a bin edge falls one side before the turn and the
+      // other side after, so a model that repeats EXACTLY still reads as
+      // mismatched. Measured on a frame generated to be exactly 16-fold, hard
+      // binning reported 4.62% - which is the same order as the number this
+      // detector was reporting for real models, so it was measuring itself.
+      const t = (Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI) * BINS;
+      const b0 = Math.floor(t), f = t - b0;
+      const lo = ((b0 % BINS) + BINS) % BINS, hi = (lo + 1) % BINS;
+      hist[lo] += tri[i + 2] * (1 - f);
+      hist[hi] += tri[i + 2] * f;
     }
     const total = hist.reduce((a, b) => a + b, 0) || 1;
 
