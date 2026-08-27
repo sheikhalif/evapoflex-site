@@ -241,7 +241,26 @@ export async function boot({ workerSources, baseUrl }) {
     };
     const [aLo, aHi] = onU(seam.a.bbox), [bLo, bHi] = onU(seam.b.bbox);
     const lo = Math.max(aLo, bLo), hi = Math.min(aHi, bHi);
-    return prof.tabs.find((t) => t.at >= lo - 0.5 && t.at <= hi + 0.5) || null;
+    const inside = prof.tabs.find((t) => t.at >= lo - 0.5 && t.at <= hi + 0.5);
+    if (inside) return inside;
+    // Nearest, when nothing is strictly inside.
+    //
+    // The tab's position comes from the section of the PARENT; the seam's comes
+    // from projecting two axis-aligned boxes of the finished components, and on
+    // a part that is not axis-aligned those two disagree by a few millimetres.
+    // Measured on the frame: tabs at u = 408 against a contact projecting to
+    // 397.2..402.9, so containment failed on 63 seams that the cut had actually
+    // jointed - the geometry was there and the report said glue. Attributing to
+    // the nearest tab describes what was cut instead of what the boxes imply.
+    const mid = (lo + hi) / 2;
+    let best = null, bestD = Infinity;
+    for (const t of prof.tabs) {
+      const d = Math.abs(t.at - mid);
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    if (!best) return null;
+    const reach = (best.width || 0) / 2 + Math.max(6, (hi - lo));
+    return bestD <= reach ? best : null;
   };
 
   /**
@@ -287,13 +306,24 @@ export async function boot({ workerSources, baseUrl }) {
       planes.push({ n, d: n[0] * c[0] + n[1] * c[1] });
     }
 
+    // Ring cuts belong to ONE sector each.
+    //
+    // Without saying so they are infinite planes and each one slices all
+    // sixteen sectors: measured, 280 parts where Auto Split makes 35. The two
+    // radial planes bounding a sector are exactly the halfspaces that say
+    // "this cut is for that spoke", and manualTree now honours them.
     const bands = Math.max(1, Math.ceil(R / lim));
     for (let j = 1; j < bands; j++) {
       const rad = (j * R) / bands;
       for (let k = 0; k < sectors; k++) {
         const b = sym.phaseRad + (k + 0.5) * step;
         const n = [Math.cos(b), Math.sin(b), 0];
-        planes.push({ n, d: n[0] * c[0] + n[1] * c[1] + rad });
+        const lo = sym.phaseRad + k * step, hi = sym.phaseRad + (k + 1) * step;
+        const inward = (t, sign) => {
+          const nn = [-Math.sin(t) * sign, Math.cos(t) * sign, 0];
+          return { n: nn, d: nn[0] * c[0] + nn[1] * c[1] };
+        };
+        planes.push({ n, d: n[0] * c[0] + n[1] * c[1] + rad, only: [inward(lo, 1), inward(hi, -1)] });
       }
     }
     return { planes, sectors, bands };
@@ -364,7 +394,7 @@ export async function boot({ workerSources, baseUrl }) {
       const built = symmetricPlanes(sym, state.bed);
       if (!built) { setProgress(0); say('Could not build a symmetric cut set.', true, 6000); return; }
       state.symmetry = sym;
-      // MEASURED AND NOT SHIPPED. Radial cuts do make the sectors identical,
+      // Radial cuts make the sectors identical; ring cuts shorten each one.
       // but the ring cuts that shorten each sector are infinite PLANES, and
       // manualTree applies every plane to every piece it crosses - so each
       // ring cut slices all sixteen sectors instead of its own. On the wheel
@@ -375,12 +405,8 @@ export async function boot({ workerSources, baseUrl }) {
       // piece and two children, but nothing lets a cut say "only this piece" -
       // so sector-local ring cuts need the plan format to carry per-piece
       // assignment first. Refusing beats quietly producing 280 parts.
-      setProgress(0);
-      say(`${sym.order}-fold symmetry found (${(sym.err * 100).toFixed(1)}% mismatch), but symmetric splitting is `
-        + `not ready: ring cuts run across every sector, which made 280 parts where Auto Split makes 35. `
-        + `Use Symmetrise to make the model exactly ${sym.order}-fold, then Auto Split.`, true, 11000);
-      return;
-      // eslint-disable-next-line no-unreachable
+      say(`${sym.order}-fold symmetry (${(sym.err * 100).toFixed(2)}% mismatch) - `
+        + `${built.sectors} sectors x ${built.bands} bands.`);
       await autoSplit(built.planes);
     } catch (e) { setProgress(0); say(e.message, true, 7000); }
   }
@@ -431,12 +457,20 @@ export async function boot({ workerSources, baseUrl }) {
     // The joint sizes itself from the face it has to live in. That face is the
     // rail's width by the sheet's thickness, so its area is the only honest
     // budget for how big the tab can be.
+    // EVERY SEAM GETS A MECHANISM.
+    //
+    // A dovetail needs an undercut plus a side wall either side of it, and thin
+    // stock has room for neither - which is why so many of the frame's seams
+    // came back as plain glue. Fingers need neither: they give up the undercut
+    // but locate the parts, resist the seam shearing or hinging, and roughly
+    // double the bonded area. So the dovetail is tried first because it is the
+    // stronger joint, and where it will not fit the seam falls to fingers
+    // rather than to nothing at all.
+    const want = state.mateType === 'puzzle' ? 'puzzle' : 'dovetail';
     const r = await csg.call('csg.splitProfiled', {
       solidId: parentId, plane: pl,
-      // No `at` or `width`: the worker sizes and counts the tabs from the face
-      // itself, which is the whole point of a parametric joint.
       stock: { tabs: sec.lumps.map(() => ({})) },
-      opts: { type: state.mateType === 'puzzle' ? 'puzzle' : 'dovetail', clearance: fit().tol, faceThickness: sec.thickness },
+      opts: { type: want, clearance: fit().tol, faceThickness: sec.thickness, nozzle: printer().nozzle },
     });
     if (r.aId == null) { profiled.set(idx, { used: false, why: r.why }); return null; }
     profiled.set(idx, {
@@ -496,12 +530,28 @@ export async function boot({ workerSources, baseUrl }) {
     // "parts" that were two objects a metre apart sharing a colour, a row in
     // the list and - worse - a single joint that bonded only one of them.
     const leaves = [...new Set(plan.planes.flatMap((p) => [p.aId, p.bId]))].filter((id) => !parents.has(id));
-    let islands = 0;
+    let islands = 0, shards = 0, shardVol = 0;
     const comps = [];
     for (const leaf of leaves) {
       const r = await csg.call('csg.decompose', { solidId: idMap.get(leaf) });
       if (r.split) islands += r.parts.length - 1;
       for (const c of r.parts) {
+        // Debris is not a part.
+        //
+        // A cut that grazes a rail's edge leaves a shard - measured on the
+        // symmetric frame, 20 of 56 "parts" were slivers of 0 to 27 mm3, one of
+        // them 1.1 x 0.5 mm, and every unique shard counted as its own distinct
+        // shape and wrecked the simplicity score. Nothing thinner than a couple
+        // of extrusions can be printed, let alone picked up and glued, so it is
+        // counted, its volume reported, and dropped.
+        const thin = Math.min(c.bbox.max[0] - c.bbox.min[0],
+                              c.bbox.max[1] - c.bbox.min[1],
+                              c.bbox.max[2] - c.bbox.min[2]);
+        if (thin < 2 * (printer().nozzle ?? 0.4) || c.volume < 1) {
+          shards++; shardVol += Math.max(0, c.volume);
+          csg.call('csg.release', { solidIds: [c.solidId] });
+          continue;
+        }
         comps.push({ leaf, csgId: c.solidId, bbox: c.bbox, volume: c.volume, gid: `p${state.seq++}` });
       }
       setProgress(0.55 + 0.05 * (leaves.indexOf(leaf) + 1) / leaves.length);
@@ -661,6 +711,7 @@ export async function boot({ workerSources, baseUrl }) {
     }
     state.plainSeams = plain;
     state.islandCount = islands;
+    state.shardCount = shards; state.shardVolume = shardVol;
     state.profiledPlanes = profiled;
 
     // ---------------------------------------------------------------- parts

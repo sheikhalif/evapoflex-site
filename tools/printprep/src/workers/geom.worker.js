@@ -373,7 +373,7 @@ serve({
     if (manualPlanes && manualPlanes.length) {
       // The user placed the planes; build the same tree shape by applying each
       // plane to every piece it crosses, in order.
-      plan = manualTree(proxy, manualPlanes);
+      plan = manualTree(proxy, manualPlanes);   // `only` masks travel with each plane
     } else {
       plan = planSplit(proxy, analysis, { bed, protrusion: prot, sMax, budgetMs: 45000 });
     }

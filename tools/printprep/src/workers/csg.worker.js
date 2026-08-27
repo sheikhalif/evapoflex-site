@@ -312,8 +312,48 @@ serve({
         const want = Math.max(6, 1.6 * T) + 2 * (opts?.sideWall ?? 1.2) + 2;
         return Math.max(1, Math.min(8, Math.floor(lump.width / want)));
       };
+      // PICK THE GEOMETRY PER LUMP, not per cut.
+      //
+      // One plane crosses rails of different widths. Choosing a single type for
+      // the whole cut meant that when the dovetail fitted SOME rails, the ones
+      // it did not fit stayed plain - on the frame, 71 of 116 seams. Deciding
+      // per lump lets a wide rail take the stronger dovetail while the narrow
+      // one beside it takes fingers, and no seam is left with nothing.
+      // `askedType`, not `wanted` - the pad cap below already binds a `wanted`
+      // inside the tab loop, and shadowing it made every profiled cut die with
+      // a temporal-dead-zone error that surfaced only as "no joints".
+      const askedType = opts?.type || 'dovetail';
+      const typeFor = (lump) => {
+        if (askedType === 'fingers') return 'fingers';
+        const p0 = seamParams(askedType, { width: lump.width, thickness: lump.zHi - lump.zLo }, opts || {});
+        return p0.ok ? askedType : 'fingers';
+      };
+
       const expanded = [];
       for (const { lump, ask } of paired) {
+        const lumpType = ask.type || typeFor(lump);
+        // Fingers interlock, so only ALTERNATE slots carry a tooth: the ones
+        // between them are the other half's teeth. An odd count means the
+        // pattern starts and ends on a tooth, which keeps the seam symmetric.
+        if (lumpType === 'fingers') {
+          // Finger count from the rail's own width: as many as fit while each
+          // stays at least a few extrusions wide, always odd so the pattern
+          // starts and ends on a tooth and the seam stays symmetric.
+          const nz = opts?.nozzle ?? 0.4;
+          const minTooth = Math.max(2.5 * nz, 1.0);
+          let n = Math.max(3, Math.min(9, Math.floor(lump.width / minTooth)));
+          if (n % 2 === 0) n -= 1;
+          if (n < 3) n = 3;
+          const slot = lump.width / n;
+          for (let k = 0; k < n; k += 2) {
+            expanded.push({
+              lump: { ...lump, width: slot, uLo: lump.uLo + k * slot, uHi: lump.uLo + (k + 1) * slot,
+                      at: lump.uLo + (k + 0.5) * slot },
+              ask: { ...ask, type: 'fingers', at: lump.uLo + (k + 0.5) * slot, width: slot },
+            });
+          }
+          continue;
+        }
         const n = ask.count ?? (ask.width != null || ask.at != null ? 1 : slotsFor(lump));
         if (n <= 1) { expanded.push({ lump, ask }); continue; }
         const slot = lump.width / n;
@@ -349,6 +389,7 @@ serve({
             + `${lump.uLo.toFixed(1)}..${lump.uHi.toFixed(1)}`);
         }
         if (ask.plain) return { at, width, plain: true, params: null, why: 'asked for a plain cut' };
+        const useType = ask.type || askedType;
 
         const room = roomAt(at);
         // seamParams returns a null boss when the stock is already wide enough
@@ -360,7 +401,7 @@ serve({
         const useOpts = capped
           ? { ...opts, boss: room > width ? { ...opts.boss, width: room } : null }
           : opts || {};
-        const p = seamParams(useOpts.type || 'dovetail', { width, thickness: T }, useOpts);
+        const p = seamParams(useType, { width, thickness: T }, { ...useOpts, type: useType });
         const note = !capped ? null
           : room > width
             ? `pad capped to ${room.toFixed(1)} mm by the neighbouring rail (wanted ${wanted.toFixed(1)})`

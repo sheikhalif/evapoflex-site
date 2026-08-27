@@ -104,7 +104,28 @@ export function seamParams(type, stock, opts = {}) {
   const minNeck = nozzle * 2.5;                        // three extrusions, near enough
 
   let neck, head, R = 0, centre = 0, L;
-  if (type === 'puzzle') {
+  if (type === 'fingers') {
+    // Interlocking fingers: the seam becomes a square wave instead of a line.
+    //
+    // A dovetail needs a head wider than its neck AND a side wall either side
+    // of it, and on narrow stock there is room for neither - which is why so
+    // many seams came back as plain glue. A finger needs neither. It gives up
+    // the undercut, so it does not resist being pulled straight apart, but it
+    // locates the parts in two directions, resists the seam hinging or
+    // shearing, and roughly doubles the bonded area. That is a connection
+    // where the alternative was a butt face and hope.
+    //
+    // Prismatic through the thickness like everything else here, so it prints
+    // flat with vertical walls and no supports.
+    // A finger FILLS its slot - the caller hands one slot's width as the
+    // stock, and the tooth is that wide. Halving it left a gap either side and,
+    // worse, made the feasibility test below reject slots that were perfectly
+    // printable: a 3 mm rail came back with no teeth at all.
+    head = neck = rawW;
+    L = Math.min(reach * W, opts.tabMax ?? Infinity,
+                 opts.faceThickness ? Math.sqrt(rawW * Number(opts.faceThickness)) : Infinity);
+    L = Math.max(L, nozzle * 3);
+  } else if (type === 'puzzle') {
     // Round head on a straight neck. R is set by the stock; the neck follows.
     R = headMax / 2;
     neck = Math.max(minNeck, 0.62 * headMax);          // a waist, not a pinch
@@ -184,13 +205,18 @@ export function seamParams(type, stock, opts = {}) {
     detent: detent > 0 && T >= 4 ? detent : 0,
     detentR: Math.min(detentR, 0.14 * T, 0.28 * neck),
     // Straight talk about what the stock can support.
-    ok: W - 2 * sideWall >= nozzle * 3 && neck >= minNeck - 1e-6 && tabL >= 0.8,
+    ok: type === 'fingers'
+      ? (rawW >= nozzle * 2 && tabL >= nozzle * 2 && T >= nozzle * 2)
+      : W - 2 * sideWall >= nozzle * 3 && neck >= minNeck - 1e-6 && tabL >= 0.8,
     why: W - 2 * sideWall < nozzle * 3 ? `stock only ${W.toFixed(1)} mm wide - no room for a tab`
        : neck < minNeck - 1e-6 ? 'neck would be thinner than three extrusions'
        : tabL < 0.8 ? `flank angle leaves only ${tabL.toFixed(1)} mm of engagement - lower it or widen the stock` : null,
     // How much undercut there is to resist pull-out: the head's overhang each
     // side of the neck. This, not the tab length, is what holds the seam shut.
-    grip: (head - neck) / 2,
+    // A finger has no undercut by definition; saying 0 is the honest number.
+    grip: type === 'fingers' ? 0 : (head - neck) / 2,
+    // How much bonded area the joint buys over a plain butt face.
+    bondGain: type === 'fingers' ? 1 + (2 * tabL) / Math.max(1e-6, rawW / 2) : 1,
     bridgeMm,
     // Which build directions stay support-free - and it depends on SIZE, not
     // just on shape.
@@ -214,6 +240,10 @@ export function seamParams(type, stock, opts = {}) {
  */
 export function tabPolygon(p) {
   const pts = [];
+  if (p.type === 'fingers') {
+    const a = p.head / 2, L = p.tabL;
+    return [[-a, 0], [a, 0], [a, L], [-a, L]];
+  }
   if (p.type === 'puzzle') {
     const a = p.neck / 2, R = p.R, hc = p.centre;
     const inner = Math.sqrt(Math.max(0, R * R - a * a));

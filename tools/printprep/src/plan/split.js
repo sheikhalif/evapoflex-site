@@ -662,9 +662,33 @@ export function manualTree(rootSoup, planes) {
   const mk = (soup, cutFaces) => { const p = { id: nextId++, soup, cutFaces, fit: true }; all.set(p.id, p); return p; };
   let pieces = [mk(rootSoup, [])];
   const outPlanes = [];
+
+  /**
+   * Does this cut apply to this piece?
+   *
+   * A plane is infinite, and manualTree offers every plane to every piece it
+   * crosses - which is right for a user-placed cut and wrong for a cut that
+   * belongs to one sector of a symmetric model. Sixteen ring cuts meant to
+   * shorten sixteen spokes sliced all sixteen sectors each, and the wheel came
+   * out in 280 parts instead of 35.
+   *
+   * `only` is a list of halfspaces the piece's centroid has to satisfy. It says
+   * "this cut belongs over there" without needing to name a piece id, which the
+   * caller cannot know because ids are minted as the tree is built.
+   */
+  const applies = (pl, piece) => {
+    if (!pl.only || !pl.only.length) return true;
+    let cx = 0, cy = 0, cz = 0, n = 0;
+    for (let i = 0; i < piece.soup.length; i += 3) { cx += piece.soup[i]; cy += piece.soup[i+1]; cz += piece.soup[i+2]; n++; }
+    if (!n) return false;
+    cx /= n; cy /= n; cz /= n;
+    return pl.only.every((h) => (h.n[0]*cx + h.n[1]*cy + h.n[2]*cz - h.d) >= -1e-6);
+  };
+
   for (const pl of planes) {
     const next = [];
     for (const piece of pieces) {
+      if (!applies(pl, piece)) { next.push(piece); continue; }
       const { a, b } = clipSoup(piece.soup, pl.n, pl.d);
       if (a.length < 27 || b.length < 27) { next.push(piece); continue; }
       // A cut that shaves a sliver is worse than no cut: the sliver cannot
